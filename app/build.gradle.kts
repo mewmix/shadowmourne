@@ -7,12 +7,18 @@ android {
     namespace = "com.mewmix.glaive"
     compileSdk = 34
 
+    ndkVersion = "26.1.10909125"
+
     defaultConfig {
         applicationId = "com.mewmix.glaive"
         minSdk = 28
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -42,14 +48,19 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.8"
     }
+    externalNativeBuild {
+        cmake {
+            path = file("CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
-    }
-    externalNativeBuild {
-        cmake {
-            path = file("CMakeLists.txt")
+        jniLibs {
+            useLegacyPackaging = false
         }
     }
 }

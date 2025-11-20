@@ -15,5 +15,6 @@ data class GlaiveItem(
         const val TYPE_IMG = 2
         const val TYPE_VID = 3
         const val TYPE_APK = 4
+        const val TYPE_DOC = 5
     }
 }

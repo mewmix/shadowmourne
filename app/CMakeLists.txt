@@ -8,12 +8,16 @@ add_library(
         src/main/cpp/glaive_core.c)
 
 # Target high performance
+set(CMAKE_C_STANDARD 99)
 target_compile_options(glaive_core PRIVATE
     -O3
     -Wall
     -std=c99
     -fno-exceptions
     -ffast-math
+    -funroll-loops
+    -fomit-frame-pointer
+    -march=armv8-a+simd
 )
 
 find_library(log-lib log)
