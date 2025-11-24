@@ -52,6 +52,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
@@ -76,8 +77,10 @@ import com.mewmix.glaive.core.NativeCore
 import com.mewmix.glaive.core.FileOperations
 import com.mewmix.glaive.core.RecentFilesManager
 import com.mewmix.glaive.data.GlaiveItem
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 import kotlin.system.measureTimeMillis
@@ -115,6 +118,9 @@ fun GlaiveScreen() {
     var showEditor by remember { mutableStateOf(false) }
     var editorFile by remember { mutableStateOf<File?>(null) }
     
+    // Filter State
+    var activeFilters by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    
     // Context Menu State
     var contextMenuTarget by remember { mutableStateOf<GlaiveItem?>(null) }
     
@@ -131,10 +137,20 @@ fun GlaiveScreen() {
         }
     }
     
-    // Derived State (Sorting ONLY, Filtering is now Native)
-    val displayedList by remember(rawList, sortMode, sortAscending) {
-        derivedStateOf {
+    // Processed List State (Background Thread Result)
+    var displayedList by remember { mutableStateOf<List<GlaiveItem>>(emptyList()) }
+
+    // Background Processing for Sorting & Filtering
+    LaunchedEffect(rawList, sortMode, sortAscending, activeFilters) {
+        withContext(Dispatchers.Default) {
             var list = rawList
+            
+            // 0. Filter
+            if (activeFilters.isNotEmpty()) {
+                list = list.filter { item ->
+                    item.type == GlaiveItem.TYPE_DIR || activeFilters.contains(item.type)
+                }
+            }
             
             // 1. Sort
             list = when (sortMode) {
@@ -148,19 +164,28 @@ fun GlaiveScreen() {
             if (!sortAscending) list = list.reversed()
             
             // 3. Always keep Directories on top
-            list.sortedByDescending { it.type == GlaiveItem.TYPE_DIR }
+            list = list.sortedByDescending { it.type == GlaiveItem.TYPE_DIR }
+            
+            // Update UI on Main Thread
+            withContext(Dispatchers.Main) {
+                displayedList = list
+            }
         }
     }
 
-    // Load Data (Recursive Search, List, or Recents)
+    // Load Data / Search with Debounce
     LaunchedEffect(currentPath, searchQuery, currentTab) {
         if (currentTab == 1) {
+            // Recent Files
             rawList = RecentFilesManager.getRecents(context)
-        } else if (isSearchActive && searchQuery.length > 2) {
-            delay(300) // Debounce
-            rawList = NativeCore.search(currentPath, searchQuery)
-        } else if (!isSearchActive) {
-            rawList = NativeCore.list(currentPath)
+        } else {
+            // Browse / Search
+            if (searchQuery.isEmpty()) {
+                rawList = NativeCore.list(currentPath)
+            } else {
+                delay(300) // Debounce 300ms
+                rawList = NativeCore.search(currentPath, searchQuery)
+            }
         }
     }
 
@@ -210,6 +235,20 @@ fun GlaiveScreen() {
                 onToggleView = { isGridView = !isGridView },
                 onAddClick = { showCreateDialog = true }
             )
+            
+            // -- FILTER BAR --
+            if (!isSearchActive && currentTab == 0) {
+                FilterBar(
+                    activeFilters = activeFilters,
+                    onFilterToggle = { type ->
+                        activeFilters = if (activeFilters.contains(type)) {
+                            activeFilters - type
+                        } else {
+                            activeFilters + type
+                        }
+                    }
+                )
+            }
 
             // -- CONTENT LIST --
             if (isGridView) {
@@ -870,6 +909,47 @@ fun TextEditor(file: File, onDismiss: () -> Unit, onSave: (String) -> Unit) {
             }
         }
     )
+}
+
+@Composable
+fun FilterBar(
+    activeFilters: Set<Int>,
+    onFilterToggle: (Int) -> Unit
+) {
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item { FilterChip("Images", GlaiveItem.TYPE_IMG, activeFilters, onFilterToggle) }
+        item { FilterChip("Videos", GlaiveItem.TYPE_VID, activeFilters, onFilterToggle) }
+        item { FilterChip("Audio", 0, activeFilters, onFilterToggle, enabled = false) } // Placeholder
+        item { FilterChip("Docs", GlaiveItem.TYPE_DOC, activeFilters, onFilterToggle) }
+        item { FilterChip("APKs", GlaiveItem.TYPE_APK, activeFilters, onFilterToggle) }
+    }
+}
+
+@Composable
+fun FilterChip(
+    label: String,
+    type: Int,
+    activeFilters: Set<Int>,
+    onToggle: (Int) -> Unit,
+    enabled: Boolean = true
+) {
+    val isSelected = activeFilters.contains(type)
+    val backgroundColor = if (isSelected) AccentBlue else SurfaceGray
+    val textColor = if (isSelected) DeepSpace else SoftWhite
+    
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(backgroundColor)
+            .clickable(enabled = enabled) { onToggle(type) }
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .then(if (!enabled) Modifier.alpha(0.5f) else Modifier)
+    ) {
+        Text(label, color = textColor, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+    }
 }
 
 @Composable

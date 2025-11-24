@@ -43,6 +43,11 @@ object NativeCore {
                 }
             }
 
+            // Refine type based on extension if it's a file
+            if (type == GlaiveItem.TYPE_FILE) {
+                type = getRefinedType(name)
+            }
+
             list.add(GlaiveItem(
                 name = name,
                 path = fullPath,
@@ -60,12 +65,28 @@ object NativeCore {
     suspend fun search(root: String, query: String): List<GlaiveItem> = withContext(Dispatchers.IO) {
         val results = nativeSearch(root, query)?.filterNotNull() ?: return@withContext emptyList()
         results.map { item ->
-            if (item.type == 0) {
+            var type = item.type
+            if (type == 0) {
                 val isDir = java.io.File(item.path).isDirectory
-                item.copy(type = if (isDir) GlaiveItem.TYPE_DIR else GlaiveItem.TYPE_FILE)
-            } else {
-                item
+                type = if (isDir) GlaiveItem.TYPE_DIR else GlaiveItem.TYPE_FILE
             }
+            
+            if (type == GlaiveItem.TYPE_FILE) {
+                type = getRefinedType(item.name)
+            }
+            
+            item.copy(type = type)
+        }
+    }
+
+    private fun getRefinedType(name: String): Int {
+        val ext = name.substringAfterLast('.', "").lowercase()
+        return when (ext) {
+            "jpg", "jpeg", "png", "gif", "webp", "bmp" -> GlaiveItem.TYPE_IMG
+            "mp4", "mkv", "webm", "avi", "mov", "3gp" -> GlaiveItem.TYPE_VID
+            "apk" -> GlaiveItem.TYPE_APK
+            "pdf", "doc", "docx", "txt", "md", "xls", "xlsx", "ppt", "pptx" -> GlaiveItem.TYPE_DOC
+            else -> GlaiveItem.TYPE_FILE
         }
     }
 }
