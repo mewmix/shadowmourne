@@ -41,7 +41,7 @@ object NativeCore {
         }
         
         // Sort in Kotlin. TimSort is optimized for partially sorted arrays.
-        list.sortWith(compareBy({ it.type != GlaiveItem.TYPE_DIR }, { it.name.lowercase() }))
+        // list.sortWith(compareBy({ it.type != GlaiveItem.TYPE_DIR }, { it.name.lowercase() }))
         list
     }
 
