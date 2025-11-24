@@ -30,7 +30,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Menu
@@ -39,6 +43,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.* // Requires adding Material3 dependency or using basic Composables styled manually
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
@@ -48,8 +53,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -83,18 +90,25 @@ fun GlaiveScreen() {
     var sortAscending by remember { mutableStateOf(true) }
     var searchQuery by remember { mutableStateOf("") }
     var isSearchActive by remember { mutableStateOf(false) }
+    var selectedPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
     
-    // Derived State (Sorting & Filtering)
-    val displayedList by remember(rawList, sortMode, sortAscending, searchQuery) {
+    // Derived State: Stats
+    val stats by remember(rawList, selectedPaths) {
+        derivedStateOf {
+            val totalSize = rawList.sumOf { it.size }
+            val selectedSize = rawList.filter { selectedPaths.contains(it.path) }.sumOf { it.size }
+            val dirCount = rawList.count { it.type == GlaiveItem.TYPE_DIR }
+            val fileCount = rawList.size - dirCount
+            GlaiveStats(rawList.size, totalSize, selectedSize, dirCount, fileCount)
+        }
+    }
+    
+    // Derived State (Sorting ONLY, Filtering is now Native)
+    val displayedList by remember(rawList, sortMode, sortAscending) {
         derivedStateOf {
             var list = rawList
             
-            // 1. Filter (Search)
-            if (searchQuery.isNotEmpty()) {
-                list = list.filter { it.name.contains(searchQuery, ignoreCase = true) }
-            }
-
-            // 2. Sort
+            // 1. Sort
             list = when (sortMode) {
                 SortMode.NAME -> list.sortedBy { it.name.lowercase() }
                 SortMode.SIZE -> list.sortedBy { it.size }
@@ -102,22 +116,42 @@ fun GlaiveScreen() {
                 SortMode.TYPE -> list.sortedBy { it.type }
             }
             
-            // 3. Direction
+            // 2. Direction
             if (!sortAscending) list = list.reversed()
             
-            // 4. Always keep Directories on top
+            // 3. Always keep Directories on top
             list.sortedByDescending { it.type == GlaiveItem.TYPE_DIR }
         }
     }
 
-    // Load Data
-    LaunchedEffect(currentPath) {
-        rawList = NativeCore.list(currentPath)
+    // Load Data (Recursive Search or List)
+    LaunchedEffect(currentPath, searchQuery) {
+        if (isSearchActive && searchQuery.length > 2) {
+            delay(300) // Debounce
+            rawList = NativeCore.search(currentPath, searchQuery)
+        } else if (!isSearchActive) {
+            rawList = NativeCore.list(currentPath)
+        }
+    }
+
+    // Navigation Helper
+    fun navigateTo(path: String) {
+        currentPath = path
+        searchQuery = ""
+        isSearchActive = false
+        selectedPaths = emptySet()
     }
 
     // Back Handler
-    BackHandler(enabled = currentPath != "/storage/emulated/0") {
-        File(currentPath).parent?.let { currentPath = it }
+    BackHandler(enabled = currentPath != "/storage/emulated/0" || isSearchActive || selectedPaths.isNotEmpty()) {
+        if (selectedPaths.isNotEmpty()) {
+            selectedPaths = emptySet()
+        } else if (isSearchActive) {
+            isSearchActive = false
+            searchQuery = ""
+        } else {
+            File(currentPath).parent?.let { navigateTo(it) }
+        }
     }
 
     Box(
@@ -133,52 +167,99 @@ fun GlaiveScreen() {
                 isSearchActive = isSearchActive,
                 searchQuery = searchQuery,
                 onSearchQueryChange = { searchQuery = it },
-                onToggleSearch = { isSearchActive = !isSearchActive; searchQuery = "" },
-                onPathJump = { currentPath = it }
+                onToggleSearch = { 
+                    isSearchActive = !isSearchActive
+                    if (!isSearchActive) searchQuery = "" 
+                },
+                onPathJump = { navigateTo(it) },
+                onHomeJump = { navigateTo("/storage/emulated/0") },
+                onTermuxJump = { navigateTo("/data/data/com.termux/files/home") }
             )
 
             // -- CONTENT LIST --
             LazyColumn(
                 modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(bottom = 100.dp, top = 8.dp, start = 16.dp, end = 16.dp),
+                contentPadding = PaddingValues(bottom = 140.dp, top = 8.dp, start = 16.dp, end = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 items(displayedList, key = { it.path }) { item ->
                     FileCard(
                         item = item,
+                        isSelected = selectedPaths.contains(item.path),
                         onClick = {
-                            if (item.type == GlaiveItem.TYPE_DIR) {
-                                currentPath = item.path
+                            if (selectedPaths.isNotEmpty()) {
+                                selectedPaths = if (selectedPaths.contains(item.path)) {
+                                    selectedPaths - item.path
+                                } else {
+                                    selectedPaths + item.path
+                                }
+                            } else if (item.type == GlaiveItem.TYPE_DIR) {
+                                navigateTo(item.path)
                             } else {
                                 openFile(context, item)
                             }
                         },
-                        onLongClick = { sharePath(context, item) }
+                        onLongClick = { 
+                            selectedPaths = if (selectedPaths.contains(item.path)) {
+                                selectedPaths - item.path
+                            } else {
+                                selectedPaths + item.path
+                            }
+                        }
                     )
                 }
             }
         }
 
-        // -- FLOATING DOCK --
-        ControlDock(
+        // -- STATS & DOCK --
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 24.dp),
-            currentSort = sortMode,
-            ascending = sortAscending,
-            onSortChange = { mode ->
-                if (sortMode == mode) sortAscending = !sortAscending
-                else {
-                    sortMode = mode
-                    sortAscending = true
-                }
-            }
-        )
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            StatsBar(stats)
+            
+            ControlDock(
+                currentSort = sortMode,
+                ascending = sortAscending,
+                onSortChange = { mode ->
+                    if (sortMode == mode) sortAscending = !sortAscending
+                    else {
+                        sortMode = mode
+                        sortAscending = true
+                    }
+                },
+                selectionActive = selectedPaths.isNotEmpty(),
+                onShareSelection = {
+                    // Share logic for multiple items (or just last one for now as per previous logic)
+                    // Ideally we'd zip them or send multiple URIs.
+                    // For MVP, sharing the last selected item or all if possible.
+                    // Implementing single share for the last item to keep it simple and safe.
+                    val lastPath = selectedPaths.lastOrNull()
+                    if (lastPath != null) {
+                        val item = rawList.find { it.path == lastPath }
+                        if (item != null) sharePath(context, item)
+                    }
+                },
+                onClearSelection = { selectedPaths = emptySet() }
+            )
+        }
     }
 }
 
+data class GlaiveStats(
+    val count: Int,
+    val totalSize: Long,
+    val selectedSize: Long,
+    val dirCount: Int,
+    val fileCount: Int
+)
+
 // --- COMPONENTS ---
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun GlaiveHeader(
     currentPath: String,
@@ -186,8 +267,12 @@ fun GlaiveHeader(
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
     onToggleSearch: () -> Unit,
-    onPathJump: (String) -> Unit
+    onPathJump: (String) -> Unit,
+    onHomeJump: () -> Unit,
+    onTermuxJump: () -> Unit
 ) {
+    val keyboardController = LocalSoftwareKeyboardController.current
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -216,17 +301,39 @@ fun GlaiveHeader(
                 overflow = TextOverflow.Ellipsis
             )
 
-            IconButton(
-                onClick = onToggleSearch,
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .background(SurfaceGray)
-            ) {
-                Icon(
-                    imageVector = if (isSearchActive) Icons.Default.KeyboardArrowUp else Icons.Default.Search,
-                    contentDescription = "Search",
-                    tint = AccentBlue
-                )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Shortcuts
+                if (!isSearchActive) {
+                    IconButton(
+                        onClick = onHomeJump,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(SurfaceGray)
+                    ) {
+                        Text("🏠", fontSize = 16.sp)
+                    }
+                    IconButton(
+                        onClick = onTermuxJump,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(SurfaceGray)
+                    ) {
+                        Text("T", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AccentBlue)
+                    }
+                }
+
+                IconButton(
+                    onClick = onToggleSearch,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(SurfaceGray)
+                ) {
+                    Icon(
+                        imageVector = if (isSearchActive) Icons.Default.KeyboardArrowUp else Icons.Default.Search,
+                        contentDescription = "Search",
+                        tint = AccentBlue
+                    )
+                }
             }
         }
 
@@ -248,9 +355,14 @@ fun GlaiveHeader(
                         onValueChange = onSearchQueryChange,
                         textStyle = TextStyle(color = SoftWhite, fontSize = 16.sp),
                         modifier = Modifier.fillMaxWidth(),
-                        decorationBox = { inner ->
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(
+                            onSearch = { keyboardController?.hide() }
+                        ),
+                        decorationBox = { innerTextField ->
                             if (searchQuery.isEmpty()) Text("Type to hunt...", color = Color.Gray)
-                            inner()
+                            innerTextField()
                         }
                     )
                 }
@@ -301,6 +413,7 @@ fun BreadcrumbStrip(currentPath: String, onPathJump: (String) -> Unit) {
 @Composable
 fun FileCard(
     item: GlaiveItem,
+    isSelected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -314,7 +427,12 @@ fun FileCard(
             .scale(scale)
             .height(72.dp)
             .clip(RoundedCornerShape(24.dp))
-            .background(SurfaceGray)
+            .background(if (isSelected) AccentBlue.copy(alpha = 0.2f) else SurfaceGray)
+            .border(
+                width = if (isSelected) 2.dp else 0.dp,
+                color = if (isSelected) AccentBlue else Color.Transparent,
+                shape = RoundedCornerShape(24.dp)
+            )
             .combinedClickable(
                 onClick = { 
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
@@ -336,10 +454,14 @@ fun FileCard(
                 .background(getTypeColor(item.type).copy(alpha = 0.2f)),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = getTypeIcon(item.type),
-                fontSize = 20.sp
-            )
+            if (isSelected) {
+                Icon(Icons.Default.Check, contentDescription = null, tint = AccentBlue)
+            } else {
+                Text(
+                    text = getTypeIcon(item.type),
+                    fontSize = 20.sp
+                )
+            }
         }
 
         Spacer(modifier = Modifier.width(16.dp))
@@ -377,11 +499,52 @@ fun FileCard(
 }
 
 @Composable
+fun StatsBar(stats: GlaiveStats) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(SurfaceGray.copy(alpha = 0.8f))
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        StatItem("Files", "${stats.fileCount}")
+        StatItem("Dirs", "${stats.dirCount}")
+        StatItem("Total", formatSize(stats.totalSize))
+        if (stats.selectedSize > 0) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(AccentBlue)
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = "Sel: ${formatSize(stats.selectedSize)}",
+                    style = TextStyle(color = DeepSpace, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun StatItem(label: String, value: String) {
+    Row(verticalAlignment = Alignment.Bottom) {
+        Text(text = value, style = TextStyle(color = SoftWhite, fontWeight = FontWeight.Bold, fontSize = 12.sp))
+        Spacer(modifier = Modifier.width(2.dp))
+        Text(text = label, style = TextStyle(color = Color.Gray, fontSize = 10.sp))
+    }
+}
+
+@Composable
 fun ControlDock(
     modifier: Modifier = Modifier,
     currentSort: SortMode,
     ascending: Boolean,
-    onSortChange: (SortMode) -> Unit
+    onSortChange: (SortMode) -> Unit,
+    selectionActive: Boolean,
+    onShareSelection: () -> Unit,
+    onClearSelection: () -> Unit
 ) {
     Row(
         modifier = modifier
@@ -391,10 +554,21 @@ fun ControlDock(
             .padding(horizontal = 8.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        SortChip("Name", SortMode.NAME, currentSort, ascending, onSortChange)
-        SortChip("Size", SortMode.SIZE, currentSort, ascending, onSortChange)
-        SortChip("Date", SortMode.DATE, currentSort, ascending, onSortChange)
-        SortChip("Type", SortMode.TYPE, currentSort, ascending, onSortChange)
+        if (selectionActive) {
+            // Selection Mode Dock
+            IconButton(onClick = onClearSelection) {
+                Icon(Icons.Default.Close, contentDescription = "Clear", tint = DangerRed)
+            }
+            IconButton(onClick = onShareSelection) {
+                Icon(Icons.Default.Share, contentDescription = "Share", tint = AccentBlue)
+            }
+        } else {
+            // Sort Mode Dock
+            SortChip("Name", SortMode.NAME, currentSort, ascending, onSortChange)
+            SortChip("Size", SortMode.SIZE, currentSort, ascending, onSortChange)
+            SortChip("Date", SortMode.DATE, currentSort, ascending, onSortChange)
+            SortChip("Type", SortMode.TYPE, currentSort, ascending, onSortChange)
+        }
     }
 }
 
