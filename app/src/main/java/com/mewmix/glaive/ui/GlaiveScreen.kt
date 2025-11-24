@@ -3,6 +3,7 @@ package com.mewmix.glaive.ui
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -180,11 +181,8 @@ fun GlaiveScreen() {
                             }
                         },
                         onLongClick = {
-                            if (selectedPaths.contains(item.path)) {
-                                selectedPaths.remove(item.path)
-                            } else {
-                                selectedPaths.add(item.path)
-                            }
+                            sharePath(context, item)
+                            telemetry = telemetry.copy(lastEvent = "SHARE")
                         }
                     )
                 }
@@ -691,29 +689,51 @@ private fun formatSize(bytes: Long): String {
 
 private fun sharePath(context: Context, item: GlaiveItem) {
     if (item.type == GlaiveItem.TYPE_DIR) return
+    
     val file = File(item.path)
     if (!file.exists()) {
-        Toast.makeText(context, "File missing: ${item.name}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "Void reference: ${item.name}", Toast.LENGTH_SHORT).show()
         return
     }
+
+    // 1. SECURE THE URI
+    // Wraps the raw file in a content:// wrapper
     val uri = runCatching {
         FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
     }.getOrElse {
-        Toast.makeText(context, "Share pipe sealed", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "Provider pipe sealed", Toast.LENGTH_SHORT).show()
         return
     }
 
+    // 2. IDENTIFY THE SIGNAL
+    // Dynamic look up. Zero extra memory cost (uses System shared library).
+    val mimeType = getSmartMimeType(item.path)
+
+    // 3. CONSTRUCT THE PAYLOAD
     val intent = Intent(Intent.ACTION_SEND).apply {
-        type = mimeFor(item)
+        type = mimeType
         putExtra(Intent.EXTRA_STREAM, uri)
+        // Critical: Telegram needs permission to read the URI we just generated
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
 
+    // 4. DISPATCH
     try {
-        context.startActivity(Intent.createChooser(intent, "Dispatch ${item.name}"))
+        context.startActivity(Intent.createChooser(intent, "Dispatch [ ${mimeType} ]"))
     } catch (ex: ActivityNotFoundException) {
-        Toast.makeText(context, "No relay to receive ${item.name}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "No receiver found", Toast.LENGTH_SHORT).show()
     }
+}
+
+// Replaces your 'mimeFor'
+// Efficiently maps extension -> system mime type
+private fun getSmartMimeType(path: String): String {
+    val extension = MimeTypeMap.getFileExtensionFromUrl(path)
+    if (extension != null) {
+        val type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension.lowercase())
+        if (type != null) return type
+    }
+    return "*/*" // Fallback to raw binary if unknown
 }
 
 private fun openFile(context: Context, item: GlaiveItem) {
