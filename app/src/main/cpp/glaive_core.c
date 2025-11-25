@@ -35,31 +35,8 @@ typedef enum {
     TYPE_FILE = 6
 } FileType;
 
-static inline unsigned int hash_ext(const char *str) {
-    unsigned int hash = 5381;
-    int c;
-    while ((c = *str++)) hash = ((hash << 5) + hash) + tolower(c);
-    return hash;
-}
+// Unused functions removed
 
-static inline FileType get_type(const char *name, int d_type) {
-    if (d_type == DT_DIR) return TYPE_DIR;
-
-    const char *dot = strrchr(name, '.');
-    if (!dot) return TYPE_UNKNOWN;
-    dot++;
-
-    switch (hash_ext(dot)) {
-        case 193490416: /* png */
-        case 193497021: /* jpg */
-        case 2090499160: /* jpeg */ return TYPE_IMG;
-        case 193500088: /* mp4 */
-        case 193498837: /* mkv */ return TYPE_VID;
-        case 193486360: /* apk */ return TYPE_APK;
-        case 193499403: /* pdf */ return TYPE_DOC;
-        default: return TYPE_FILE;
-    }
-}
 
 // ==========================================
 // SEARCH HELPERS
@@ -146,32 +123,135 @@ static inline int matches_query(const char *name, const char *query, size_t qlen
 // ==========================================
 // FAST LISTING CORE
 // ==========================================
+// ==========================================
+// TYPE DETECTION (Pure C - No ASM)
+// ==========================================
 static inline unsigned char fast_get_type(const char *name, int name_len) {
     if (name_len < 4) return TYPE_FILE;
 
-    const char *ptr = name + name_len - 4;
-    uint32_t tail;
-    __asm__ volatile (
-        "ldr %w[val], [%[addr]] \n\t"
-        "orr %w[val], %w[val], #0x20202020 \n\t"
-        : [val] "=r" (tail)
-        : [addr] "r" (ptr)
-        : "cc"
-    );
-
-    switch (tail) {
-        case 0x676e702e: return TYPE_IMG; // .png
-        case 0x67706a2e: return TYPE_IMG; // .jpg
-        case 0x34706d2e: return TYPE_VID; // .mp4
-        case 0x766b6d2e: return TYPE_VID; // .mkv
-        case 0x6b70612e: return TYPE_APK; // .apk
-        case 0x6664702e: return TYPE_DOC; // .pdf
-        default: return TYPE_FILE;
+    const char *ext = name + name_len - 1;
+    // Scan backwards for dot
+    int i = 0;
+    while (i < 6 && ext > name) {
+        if (*ext == '.') break;
+        ext--;
+        i++;
     }
+    if (*ext != '.') return TYPE_FILE;
+    
+    // ext now points to dot.
+    // Simple hash or switch on extension characters
+    // We can use a simplified check for known extensions
+    
+    char e1 = tolower(ext[1]);
+    char e2 = tolower(ext[2]);
+    char e3 = tolower(ext[3]);
+    char e4 = (i >= 4) ? tolower(ext[4]) : 0;
+
+    if (e1 == 'p') {
+        if (e2 == 'n' && e3 == 'g') return TYPE_IMG; // png
+        if (e2 == 'd' && e3 == 'f') return TYPE_DOC; // pdf
+        if (e2 == 'p' && e3 == 't') return TYPE_DOC; // ppt, pptx
+    }
+    if (e1 == 'j') {
+        if (e2 == 'p' && e3 == 'g') return TYPE_IMG; // jpg
+        if (e2 == 'p' && e3 == 'e' && e4 == 'g') return TYPE_IMG; // jpeg
+    }
+    if (e1 == 'm') {
+        if (e2 == 'p' && e3 == '4') return TYPE_VID; // mp4
+        if (e2 == 'k' && e3 == 'v') return TYPE_VID; // mkv
+        if (e2 == 'o' && e3 == 'v') return TYPE_VID; // mov
+    }
+    if (e1 == 'a') {
+        if (e2 == 'p' && e3 == 'k') return TYPE_APK; // apk
+        if (e2 == 'v' && e3 == 'i') return TYPE_VID; // avi
+    }
+    if (e1 == 'g') {
+        if (e2 == 'i' && e3 == 'f') return TYPE_IMG; // gif
+    }
+    if (e1 == 'w') {
+        if (e2 == 'e' && e3 == 'b') {
+            if (e4 == 'p') return TYPE_IMG; // webp
+            if (e4 == 'm') return TYPE_VID; // webm
+        }
+    }
+    if (e1 == 'd') {
+        if (e2 == 'o' && e3 == 'c') return TYPE_DOC; // doc, docx
+    }
+    if (e1 == 'x') {
+        if (e2 == 'l' && e3 == 's') return TYPE_DOC; // xls, xlsx
+    }
+    if (e1 == 't') {
+        if (e2 == 'x' && e3 == 't') return TYPE_DOC; // txt
+    }
+    if (e1 == '3') {
+        if (e2 == 'g' && e3 == 'p') return TYPE_VID; // 3gp
+    }
+    if (e1 == 'b') {
+        if (e2 == 'm' && e3 == 'p') return TYPE_IMG; // bmp
+    }
+
+    return TYPE_FILE;
+}
+
+// ==========================================
+// SORTING
+// ==========================================
+typedef struct {
+    char* name;
+    int name_len;
+    unsigned char type;
+    int64_t size;
+    int64_t time;
+} GlaiveEntry;
+
+typedef enum {
+    SORT_NAME = 0,
+    SORT_DATE = 1,
+    SORT_SIZE = 2,
+    SORT_TYPE = 3
+} SortMode;
+
+static int g_sort_mode = SORT_NAME;
+static int g_sort_asc = 1;
+
+int compare_entries(const void* a, const void* b) {
+    GlaiveEntry* ea = (GlaiveEntry*)a;
+    GlaiveEntry* eb = (GlaiveEntry*)b;
+
+    // Always Directories First
+    if (ea->type == TYPE_DIR && eb->type != TYPE_DIR) return -1;
+    if (ea->type != TYPE_DIR && eb->type == TYPE_DIR) return 1;
+
+    int result = 0;
+    switch (g_sort_mode) {
+        case SORT_NAME:
+            result = strcasecmp(ea->name, eb->name);
+            break;
+        case SORT_SIZE:
+            if (ea->size < eb->size) result = -1;
+            else if (ea->size > eb->size) result = 1;
+            else result = strcasecmp(ea->name, eb->name);
+            break;
+        case SORT_DATE:
+            if (ea->time < eb->time) result = -1;
+            else if (ea->time > eb->time) result = 1;
+            else result = strcasecmp(ea->name, eb->name);
+            break;
+        case SORT_TYPE:
+            if (ea->type < eb->type) result = -1;
+            else if (ea->type > eb->type) result = 1;
+            else result = strcasecmp(ea->name, eb->name);
+            break;
+        default:
+            result = strcasecmp(ea->name, eb->name);
+    }
+
+    return g_sort_asc ? result : -result;
 }
 
 JNIEXPORT jint JNICALL
-Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject clazz, jstring jPath, jobject jBuffer, jint capacity) {
+Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject clazz, jstring jPath, jobject jBuffer, jint capacity, jint sortMode, jboolean asc, jint filterMask) {
     if (capacity <= 0) return 0;
 
     const char *path = (*env)->GetStringUTFChars(env, jPath, NULL);
@@ -187,8 +267,20 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
         return -1;
     }
 
-    unsigned char *head = buffer;
-    unsigned char *end = buffer + capacity;
+    // Temporary storage for sorting
+    // We'll allocate a large chunk on heap for pointers/structs
+    // Assuming max 10k files for now, or realloc if needed.
+    // For "unholy speed", we can use a fixed large buffer if memory allows, or realloc.
+    // Let's start with 4096 entries and realloc.
+    size_t max_entries = 4096;
+    size_t count = 0;
+    GlaiveEntry* entries = (GlaiveEntry*)malloc(max_entries * sizeof(GlaiveEntry));
+    if (!entries) {
+        close(fd);
+        (*env)->ReleaseStringUTFChars(env, jPath, path);
+        return -3;
+    }
+
     char kbuf[4096];
     struct linux_dirent64 *d;
     struct stat st;
@@ -205,57 +297,91 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
             int name_len = 0;
             while (d->d_name[name_len] && name_len < 255) name_len++;
 
-            if (head + 2 + name_len + 16 > end) {
-                close(fd);
-                (*env)->ReleaseStringUTFChars(env, jPath, path);
-                return (jint)(head - buffer);
-            }
-
             unsigned char type = TYPE_UNKNOWN;
             int64_t size = 0;
             int64_t time = 0;
 
+            // Determine type first to filter early
             if (d->d_type == DT_DIR) {
                 type = TYPE_DIR;
             } else if (d->d_type == DT_REG) {
                 type = fast_get_type(d->d_name, name_len);
-                if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-                    size = st.st_size;
-                    time = st.st_mtime;
-                }
             } else {
-                if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-                    if (S_ISDIR(st.st_mode)) {
-                        type = TYPE_DIR;
-                    } else {
-                        type = fast_get_type(d->d_name, name_len);
-                        size = st.st_size;
-                        time = st.st_mtime;
-                    }
-                } else {
+                 // Fallback stat for unknown types
+                 if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+                    if (S_ISDIR(st.st_mode)) type = TYPE_DIR;
+                    else type = fast_get_type(d->d_name, name_len);
+                 } else {
                     type = TYPE_FILE;
-                }
+                 }
             }
-
+            
             if (type == TYPE_UNKNOWN) type = fast_get_type(d->d_name, name_len);
             if (type == TYPE_UNKNOWN) type = TYPE_FILE;
 
-            *head++ = type;
-            *head++ = (unsigned char)name_len;
-            memcpy(head, d->d_name, name_len);
-            head += name_len;
-            memcpy(head, &size, sizeof(int64_t));
-            head += sizeof(int64_t);
-            memcpy(head, &time, sizeof(int64_t));
-            head += sizeof(int64_t);
+            // FILTERING
+            // If filterMask is set (not 0), and it's NOT a directory, check if bit is set.
+            // We assume filterMask bits correspond to TYPE_* values.
+            // Actually, usually mask is: 1<<TYPE_IMG | 1<<TYPE_VID etc.
+            // If filterMask is empty (0), show all.
+            // Always show directories.
+            if (filterMask != 0 && type != TYPE_DIR) {
+                if (!((1 << type) & filterMask)) {
+                    continue; // Skip
+                }
+            }
+
+            // Get stats if needed (for sorting or display)
+            // We only stat if we need size/date OR if we haven't stat-ed yet.
+            // For now, we always stat for correctness of display.
+            if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+                size = st.st_size;
+                time = st.st_mtime;
+            }
+
+            // Add to list
+            if (count >= max_entries) {
+                max_entries *= 2;
+                GlaiveEntry* new_entries = (GlaiveEntry*)realloc(entries, max_entries * sizeof(GlaiveEntry));
+                if (!new_entries) break; // OOM
+                entries = new_entries;
+            }
+
+            entries[count].name = strdup(d->d_name); // We must copy name
+            entries[count].name_len = name_len;
+            entries[count].type = type;
+            entries[count].size = size;
+            entries[count].time = time;
+            count++;
         }
     }
-
-    if (nread == -1) {
-        LOGE("getdents64 failed: %s", strerror(errno));
-    }
-
     close(fd);
+
+    // SORT
+    g_sort_mode = sortMode;
+    g_sort_asc = asc;
+    qsort(entries, count, sizeof(GlaiveEntry), compare_entries);
+
+    // SERIALIZE
+    unsigned char *head = buffer;
+    unsigned char *end = buffer + capacity;
+    
+    for (size_t i = 0; i < count; i++) {
+        if (head + 2 + entries[i].name_len + 16 > end) break;
+
+        *head++ = entries[i].type;
+        *head++ = (unsigned char)entries[i].name_len;
+        memcpy(head, entries[i].name, entries[i].name_len);
+        head += entries[i].name_len;
+        memcpy(head, &entries[i].size, sizeof(int64_t));
+        head += sizeof(int64_t);
+        memcpy(head, &entries[i].time, sizeof(int64_t));
+        head += sizeof(int64_t);
+
+        free(entries[i].name);
+    }
+    free(entries);
+
     (*env)->ReleaseStringUTFChars(env, jPath, path);
     return (jint)(head - buffer);
 }
@@ -263,56 +389,128 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
 // ==========================================
 // SEARCH PIPELINE
 // ==========================================
-void recursive_scan(const char* base, const char* query, size_t qlen, int glob_mode, JNIEnv *env, jobjectArray result, int* idx, int max, jclass cls, jmethodID ctor) {
-    if (*idx >= max) return;
+void recursive_scan(char* path_buf, size_t current_len, size_t base_len, const char* query, size_t qlen, int glob_mode, 
+                   unsigned char** head_ptr, unsigned char* end, int filterMask) {
+    if (*head_ptr >= end) return;
 
-    DIR* dir = opendir(base);
+    DIR* dir = opendir(path_buf);
     if (!dir) return;
 
     struct dirent* d;
-    char path[4096];
+    // No large stack allocation here!
 
-    while ((d = readdir(dir)) != NULL && *idx < max) {
+    while ((d = readdir(dir)) != NULL) {
+        if (*head_ptr >= end) break;
         if (d->d_name[0] == '.') continue;
 
-        snprintf(path, sizeof(path), "%s/%s", base, d->d_name);
-
+        size_t name_len = strlen(d->d_name);
+        
         if (d->d_type == DT_DIR) {
             if (strcmp(d->d_name, "Android") != 0) {
-                recursive_scan(path, query, qlen, glob_mode, env, result, idx, max, cls, ctor);
+                // Check path length limit
+                if (current_len + 1 + name_len < 4096) {
+                    path_buf[current_len] = '/';
+                    memcpy(path_buf + current_len + 1, d->d_name, name_len + 1); // +1 for null
+                    
+                    recursive_scan(path_buf, current_len + 1 + name_len, base_len, query, qlen, glob_mode, head_ptr, end, filterMask);
+                    
+                    path_buf[current_len] = 0; // Restore for next iteration
+                }
             }
         } else {
             if (matches_query(d->d_name, query, qlen, glob_mode)) {
-                jstring jName = (*env)->NewStringUTF(env, d->d_name);
-                jstring jPath = (*env)->NewStringUTF(env, path);
-                jobject item = (*env)->NewObject(env, cls, ctor, jName, jPath, get_type(d->d_name, d->d_type), (jlong)0, (jlong)0);
-                (*env)->SetObjectArrayElement(env, result, *idx, item);
-                (*idx)++;
+                
+                // Filter check
+                unsigned char type = fast_get_type(d->d_name, name_len);
+                if (filterMask != 0) {
+                    if (!((1 << type) & filterMask)) continue;
+                }
 
-                (*env)->DeleteLocalRef(env, jName);
-                (*env)->DeleteLocalRef(env, jPath);
-                (*env)->DeleteLocalRef(env, item);
+                // We need to write the RELATIVE path so GlaiveCursor can reconstruct the full path.
+                // Construct full path in path_buf temporarily
+                if (current_len + 1 + name_len < 4096) {
+                    path_buf[current_len] = '/';
+                    memcpy(path_buf + current_len + 1, d->d_name, name_len + 1);
+                    
+                    // Relative path starts after base_len + 1 (for the slash)
+                    // If base_len is length of "/storage/emulated/0", relative starts at index base_len + 1
+                    char* rel_path = path_buf + base_len + 1;
+                    size_t rel_len = (current_len + 1 + name_len) - (base_len + 1);
+                    
+                    // Cap len at 255 for the protocol (or maybe we should allow longer? 
+                    // The protocol uses 1 byte for len, so 255 is hard limit for "name" field.
+                    // If relative path is > 255, we might truncate. 
+                    // Ideally we'd change protocol to support longer paths, but for now cap it.)
+                    int proto_len = (rel_len > 255) ? 255 : (int)rel_len;
+                    
+                    // Check buffer space
+                    if (*head_ptr + 2 + proto_len + 16 > end) {
+                        path_buf[current_len] = 0; // Restore
+                        break;
+                    }
+
+                    // unsigned char type = fast_get_type(d->d_name, name_len); // Use actual name for type
+                    int64_t size = 0;
+                    int64_t time = 0;
+
+                    // SKIP STAT FOR SPEED
+                    
+                    *(*head_ptr)++ = type;
+                    *(*head_ptr)++ = (unsigned char)proto_len;
+                    memcpy(*head_ptr, rel_path, proto_len);
+                    *head_ptr += proto_len;
+                    memcpy(*head_ptr, &size, sizeof(int64_t));
+                    *head_ptr += sizeof(int64_t);
+                    memcpy(*head_ptr, &time, sizeof(int64_t));
+                    *head_ptr += sizeof(int64_t);
+                    
+                    path_buf[current_len] = 0; // Restore
+                }
             }
         }
     }
     closedir(dir);
 }
 
-JNIEXPORT jobjectArray JNICALL
-Java_com_mewmix_glaive_core_NativeCore_nativeSearch(JNIEnv *env, jclass clazz, jstring jRoot, jstring jQuery) {
+JNIEXPORT jint JNICALL
+Java_com_mewmix_glaive_core_NativeCore_nativeSearch(JNIEnv *env, jobject clazz, jstring jRoot, jstring jQuery, jobject jBuffer, jint capacity, jint filterMask) {
+    if (capacity <= 0) return 0;
+
     const char *root = (*env)->GetStringUTFChars(env, jRoot, NULL);
     const char *query = (*env)->GetStringUTFChars(env, jQuery, NULL);
+    unsigned char *buffer = (*env)->GetDirectBufferAddress(env, jBuffer);
+
+    if (!buffer) {
+        (*env)->ReleaseStringUTFChars(env, jRoot, root);
+        (*env)->ReleaseStringUTFChars(env, jQuery, query);
+        return -2;
+    }
+
     size_t qlen = strlen(query);
     int glob_mode = has_glob_tokens(query);
 
-    jclass cls = (*env)->FindClass(env, "com/mewmix/glaive/data/GlaiveItem");
-    jmethodID ctor = (*env)->GetMethodID(env, cls, "<init>", "(Ljava/lang/String;Ljava/lang/String;IJJ)V");
-    jobjectArray result = (*env)->NewObjectArray(env, 500, cls, NULL);
+    unsigned char *head = buffer;
+    unsigned char *end = buffer + capacity;
 
-    int count = 0;
-    recursive_scan(root, query, qlen, glob_mode, env, result, &count, 500, cls, ctor);
+    // Use a single heap-allocated buffer for path construction
+    // Actually, instructions said "Move the path buffer to the stack or a reused thread_local static buffer"
+    // Stack 4096 is fine for this depth.
+    char path_buf[4096];
+    
+    size_t root_len = strlen(root);
+    if (root_len < 4096) {
+        strcpy(path_buf, root);
+        // Remove trailing slash if present
+        if (root_len > 1 && path_buf[root_len - 1] == '/') {
+            path_buf[root_len - 1] = 0;
+            root_len--;
+        }
+        
+        recursive_scan(path_buf, root_len, root_len, query, qlen, glob_mode, &head, end, filterMask);
+    }
 
     (*env)->ReleaseStringUTFChars(env, jRoot, root);
     (*env)->ReleaseStringUTFChars(env, jQuery, query);
-    return result;
+    
+    return (jint)(head - buffer);
 }

@@ -185,74 +185,23 @@ fun GlaiveScreen() {
         }
     }
     
-    // Derived State: Stats
-    val stats by remember(rawList, secondaryRawList, selectedPaths, activePane) {
-        derivedStateOf {
-            val activeList = if (activePane == 0) rawList else secondaryRawList
-            val totalSize = activeList.sumOf { it.size }
-            val selectedSize = activeList.filter { selectedPaths.contains(it.path) }.sumOf { it.size }
-            val dirCount = activeList.count { it.type == GlaiveItem.TYPE_DIR }
-            val fileCount = activeList.size - dirCount
-            GlaiveStats(activeList.size, totalSize, selectedSize, dirCount, fileCount)
-        }
+    // Processed List State (Directly from Native)
+    // We no longer need separate displayedList because rawList IS the displayed list (sorted/filtered by native)
+    // But we need to trigger reload when sort/filter changes.
+    
+    // Helper to convert filters to mask
+    fun getFilterMask(filters: Set<Int>): Int {
+        var mask = 0
+        for (type in filters) mask = mask or (1 shl type)
+        return mask
     }
     
-    // Processed List State (Background Thread Result)
-    var displayedList by remember { mutableStateOf<List<GlaiveItem>>(emptyList()) }
-    var secondaryDisplayedList by remember { mutableStateOf<List<GlaiveItem>>(emptyList()) }
-
-    // Background Processing for Sorting & Filtering
-    LaunchedEffect(rawList, sortMode, sortAscending, activeFilters) {
-        withContext(Dispatchers.Default) {
-            var list = rawList
-            
-            // 0. Filter
-            if (activeFilters.isNotEmpty()) {
-                list = list.filter { item ->
-                    item.type == GlaiveItem.TYPE_DIR || activeFilters.contains(item.type)
-                }
-            }
-            
-            // 1. Sort
-            list = when (sortMode) {
-                SortMode.NAME -> list.sortedBy { it.name.lowercase() }
-                SortMode.SIZE -> list.sortedBy { it.size }
-                SortMode.DATE -> list.sortedBy { it.mtime }
-                SortMode.TYPE -> list.sortedBy { it.type }
-            }
-            
-            // 2. Direction
-            if (!sortAscending) list = list.reversed()
-            
-            // 3. Always keep Directories on top
-            list = list.sortedByDescending { it.type == GlaiveItem.TYPE_DIR }
-            
-            // Update UI on Main Thread
-            withContext(Dispatchers.Main) {
-                displayedList = list
-            }
-        }
-    }
-
-    LaunchedEffect(secondaryRawList, sortMode, sortAscending, activeFilters) {
-        withContext(Dispatchers.Default) {
-            var list = secondaryRawList
-            if (activeFilters.isNotEmpty()) {
-                list = list.filter { item ->
-                    item.type == GlaiveItem.TYPE_DIR || activeFilters.contains(item.type)
-                }
-            }
-            list = when (sortMode) {
-                SortMode.NAME -> list.sortedBy { it.name.lowercase() }
-                SortMode.SIZE -> list.sortedBy { it.size }
-                SortMode.DATE -> list.sortedBy { it.mtime }
-                SortMode.TYPE -> list.sortedBy { it.type }
-            }
-            if (!sortAscending) list = list.reversed()
-            list = list.sortedByDescending { it.type == GlaiveItem.TYPE_DIR }
-            withContext(Dispatchers.Main) {
-                secondaryDisplayedList = list
-            }
+    fun getSortModeInt(mode: SortMode): Int {
+        return when(mode) {
+            SortMode.NAME -> 0
+            SortMode.DATE -> 1
+            SortMode.SIZE -> 2
+            SortMode.TYPE -> 3
         }
     }
 
@@ -284,32 +233,64 @@ fun GlaiveScreen() {
     }
 
     // Load Data / Search with Debounce
-    LaunchedEffect(currentPath, searchQuery, currentTab) {
-        DebugLogger.logSuspend("Loading data for path: $currentPath, query: $searchQuery, tab: $currentTab") {
+    LaunchedEffect(currentPath, searchQuery, currentTab, sortMode, sortAscending, activeFilters) {
+        // Cancel previous job implicitly by LaunchedEffect restart
+        DebugLogger.logSuspend("Loading data for path: $currentPath") {
             if (currentTab == 1) {
                 rawList = RecentFilesManager.getRecents(context)
             } else {
                 if (searchQuery.isEmpty()) {
-                    rawList = NativeCore.list(currentPath)
+                    rawList = NativeCore.list(
+                        currentPath, 
+                        getSortModeInt(sortMode), 
+                        sortAscending, 
+                        getFilterMask(activeFilters)
+                    )
                 } else {
                     delay(300)
-                    rawList = NativeCore.search(currentPath, searchQuery)
+                    // Search doesn't support sort yet in C (it wasn't in instructions), 
+                    // but it does support filter.
+                    rawList = NativeCore.search(currentPath, searchQuery, getFilterMask(activeFilters))
                 }
             }
         }
     }
 
-    LaunchedEffect(secondaryPath, secondarySearchQuery, secondaryCurrentTab) {
-        DebugLogger.logSuspend("Loading data for secondary path: $secondaryPath, query: $secondarySearchQuery, tab: $secondaryCurrentTab") {
+    LaunchedEffect(secondaryPath, secondarySearchQuery, secondaryCurrentTab, sortMode, sortAscending, activeFilters, splitScopeEnabled) {
+        if (!splitScopeEnabled) return@LaunchedEffect
+        DebugLogger.logSuspend("Loading data for secondary path: $secondaryPath") {
             if (secondaryCurrentTab == 1) {
                 secondaryRawList = RecentFilesManager.getRecents(context)
             } else {
                 if (secondarySearchQuery.isEmpty()) {
-                    secondaryRawList = NativeCore.list(secondaryPath)
+                    secondaryRawList = NativeCore.list(
+                        secondaryPath,
+                        getSortModeInt(sortMode),
+                        sortAscending,
+                        getFilterMask(activeFilters)
+                    )
                 } else {
                     delay(300)
-                    secondaryRawList = NativeCore.search(secondaryPath, secondarySearchQuery)
+                    secondaryRawList = NativeCore.search(secondaryPath, secondarySearchQuery, getFilterMask(activeFilters))
                 }
+            }
+        }
+    }
+    
+    // Stats Calculation (Background)
+    var stats by remember { mutableStateOf(GlaiveStats(0, 0, 0, 0, 0)) }
+    LaunchedEffect(rawList, secondaryRawList, selectedPaths, activePane) {
+        withContext(Dispatchers.Default) {
+            val activeList = if (activePane == 0) rawList else secondaryRawList
+            // Note: Iterating activeList (GlaiveLazyList) will decode items. 
+            // This is unavoidable for stats unless we add a native stats API.
+            // But doing it in background prevents UI jank.
+            val totalSize = activeList.sumOf { it.size }
+            val selectedSize = activeList.filter { selectedPaths.contains(it.path) }.sumOf { it.size }
+            val dirCount = activeList.count { it.type == GlaiveItem.TYPE_DIR }
+            val fileCount = activeList.size - dirCount
+            withContext(Dispatchers.Main) {
+                stats = GlaiveStats(activeList.size, totalSize, selectedSize, dirCount, fileCount)
             }
         }
     }
@@ -430,7 +411,7 @@ fun GlaiveScreen() {
                                     .weight(if (maximizedPane == 0) 1f else splitFraction)
                                     .fillMaxHeight(),
                                 isGridView = isGridView,
-                                displayedList = displayedList,
+                                displayedList = rawList,
                                 selectedPaths = selectedPaths,
                                 sortMode = sortMode,
                                 onItemClick = handleItemClick,
@@ -473,7 +454,7 @@ fun GlaiveScreen() {
                                     .weight(if (maximizedPane == 1) 1f else 1f - splitFraction)
                                     .fillMaxHeight(),
                                 isGridView = isGridView,
-                                displayedList = secondaryDisplayedList,
+                                displayedList = secondaryRawList,
                                 selectedPaths = selectedPaths,
                                 sortMode = sortMode,
                                 onItemClick = handleItemClick,
@@ -490,7 +471,7 @@ fun GlaiveScreen() {
                     paneIndex = activePane,
                     modifier = Modifier.weight(1f),
                     isGridView = isGridView,
-                    displayedList = if (activePane == 0) displayedList else secondaryDisplayedList,
+                    displayedList = if (activePane == 0) rawList else secondaryRawList,
                     selectedPaths = selectedPaths,
                     sortMode = sortMode,
                     onItemClick = handleItemClick,
@@ -712,14 +693,18 @@ fun GlaiveHeader(
         }
 
         // Title Row
-        Row(
-            modifier = Modifier.padding(horizontal = 24.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+        Column(
+            modifier = Modifier.padding(horizontal = 24.dp)
         ) {
             StatsBar(stats)
+            
+            Spacer(modifier = Modifier.height(8.dp))
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.End
+            ) {
                 // Shortcuts
                 if (!isSearchActive && currentTab == 0) {
                     IconButton(onClick = onAddClick, modifier = Modifier.clip(CircleShape).background(SurfaceGray)) {
@@ -915,13 +900,10 @@ fun FileCard(
     onLongClick: () -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
-    var isPressed by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (isPressed) 0.96f else 1f, label = "press")
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .scale(scale)
             .height(72.dp)
             .clip(RoundedCornerShape(24.dp))
             .background(if (isSelected) AccentBlue.copy(alpha = 0.2f) else SurfaceGray)
