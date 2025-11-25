@@ -64,6 +64,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
@@ -129,6 +130,9 @@ fun GlaiveScreen() {
     var editorFile by remember { mutableStateOf<File?>(null) }
     val pathHistory = remember { mutableStateListOf<String>() }
     var splitScopeEnabled by remember { mutableStateOf(false) }
+    var splitFraction by remember { mutableStateOf(0.5f) }
+    val minSplitFraction = 0.3f
+    val maxSplitFraction = 0.7f
     
     // Filter State
     var activeFilters by remember { mutableStateOf<Set<Int>>(emptySet()) }
@@ -358,7 +362,7 @@ fun GlaiveScreen() {
             )
             
             // -- FILTER BAR --
-            if (!paneIsSearchActive(activePane) && paneCurrentTab(activePane) == 0) {
+            if (!splitScopeEnabled && !paneIsSearchActive(activePane) && paneCurrentTab(activePane) == 0) {
                 FilterBar(
                     activeFilters = activeFilters,
                     onFilterToggle = { type ->
@@ -373,32 +377,66 @@ fun GlaiveScreen() {
 
             // -- CONTENT LIST --
             if (splitScopeEnabled) {
-                Row(
+                BoxWithConstraints(
                     modifier = Modifier
                         .weight(1f)
-                        .padding(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        .padding(horizontal = 8.dp)
                 ) {
-                    PaneBrowser(
-                        paneIndex = 0,
-                        modifier = Modifier.weight(1f),
-                        isGridView = isGridView,
-                        displayedList = displayedList,
-                        selectedPaths = selectedPaths,
-                        sortMode = sortMode,
-                        onItemClick = handleItemClick,
-                        onItemLongClick = handleItemLongPress
-                    )
-                    PaneBrowser(
-                        paneIndex = 1,
-                        modifier = Modifier.weight(1f),
-                        isGridView = isGridView,
-                        displayedList = secondaryDisplayedList,
-                        selectedPaths = selectedPaths,
-                        sortMode = sortMode,
-                        onItemClick = handleItemClick,
-                        onItemLongClick = handleItemLongPress
-                    )
+                    val density = LocalDensity.current
+                    val totalWidthPx = remember(maxWidth, density) { with(density) { maxWidth.toPx() } }
+                    Row(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        PaneBrowser(
+                            paneIndex = 0,
+                            modifier = Modifier
+                                .weight(splitFraction)
+                                .fillMaxHeight(),
+                            isGridView = isGridView,
+                            displayedList = displayedList,
+                            selectedPaths = selectedPaths,
+                            sortMode = sortMode,
+                            onItemClick = handleItemClick,
+                            onItemLongClick = handleItemLongPress
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .width(12.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(SurfaceGray.copy(alpha = 0.9f))
+                                .pointerInput(totalWidthPx) {
+                                    detectHorizontalDragGestures { _, dragAmount ->
+                                        if (totalWidthPx > 0f) {
+                                            val delta = dragAmount / totalWidthPx
+                                            splitFraction = (splitFraction + delta).coerceIn(minSplitFraction, maxSplitFraction)
+                                        }
+                                    }
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(2.dp)
+                                    .fillMaxHeight(0.6f)
+                                    .clip(RoundedCornerShape(1.dp))
+                                    .background(AccentBlue.copy(alpha = 0.7f))
+                            )
+                        }
+                        PaneBrowser(
+                            paneIndex = 1,
+                            modifier = Modifier
+                                .weight(1f - splitFraction)
+                                .fillMaxHeight(),
+                            isGridView = isGridView,
+                            displayedList = secondaryDisplayedList,
+                            selectedPaths = selectedPaths,
+                            sortMode = sortMode,
+                            onItemClick = handleItemClick,
+                            onItemLongClick = handleItemLongPress
+                        )
+                    }
                 }
             } else {
                 PaneBrowser(
@@ -1108,18 +1146,12 @@ fun ReverseGestureHotZone(
             )
     ) {
         if (hasTrail) {
-            Column(
-                modifier = Modifier.align(Alignment.Center),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                Icon(
-                    imageVector =Icons.Default.KeyboardArrowLeft,
-                    contentDescription = "Reverse",
-                    tint = AccentGreen
-                )
-                Text("Swipe", color = AccentGreen, fontSize = 10.sp)
-            }
+            Icon(
+                imageVector =Icons.Default.KeyboardArrowLeft,
+                contentDescription = "Reverse",
+                tint = AccentGreen,
+                modifier = Modifier.align(Alignment.Center)
+            )
         }
     }
 }
