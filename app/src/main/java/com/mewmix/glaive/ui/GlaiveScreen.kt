@@ -35,6 +35,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -42,10 +43,10 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.CallSplit
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
@@ -63,6 +64,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -78,8 +80,9 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
-import com.mewmix.glaive.core.NativeCore
+import coil.compose.AsyncImage
 import com.mewmix.glaive.core.FileOperations
+import com.mewmix.glaive.core.NativeCore
 import com.mewmix.glaive.core.RecentFilesManager
 import com.mewmix.glaive.data.GlaiveItem
 import kotlinx.coroutines.Dispatchers
@@ -140,6 +143,7 @@ fun GlaiveScreen() {
     // Context Menu State
     var contextMenuTarget by remember { mutableStateOf<GlaiveItem?>(null) }
     var contextMenuPane by remember { mutableStateOf(0) }
+    var maximizedPane by remember { mutableStateOf(-1) }
     
     val scope = rememberCoroutineScope()
     
@@ -284,10 +288,10 @@ fun GlaiveScreen() {
     }
 
     LaunchedEffect(splitScopeEnabled) {
-        if (!splitScopeEnabled) {
+        if (splitScopeEnabled) {
+            secondaryPath = currentPath
+        } else {
             activePane = 0
-        } else if (pathHistory.isNotEmpty() && secondaryPath == currentPath) {
-            secondaryPath = pathHistory.first()
         }
     }
 
@@ -295,14 +299,18 @@ fun GlaiveScreen() {
     val activePaneSearch = paneIsSearchActive(activePane)
 
     // Back Handler
-    BackHandler(enabled = activePanePath != "/storage/emulated/0" || activePaneSearch || selectedPaths.isNotEmpty()) {
+    BackHandler(enabled = (activePanePath != "/storage/emulated/0" || activePaneSearch || selectedPaths.isNotEmpty()) || (splitScopeEnabled && secondaryPath != "/storage/emulated/0")) {
         if (selectedPaths.isNotEmpty()) {
             selectedPaths = emptySet()
         } else if (activePaneSearch) {
             setPaneSearchActive(activePane, false)
             setPaneSearchQuery(activePane, "")
         } else {
-            File(activePanePath).parent?.let { navigateTo(activePane, it) }
+            if (splitScopeEnabled && activePane == 1 && secondaryPath != "/storage/emulated/0") {
+                File(secondaryPath).parent?.let { navigateTo(1, it) }
+            } else {
+                File(activePanePath).parent?.let { navigateTo(activePane, it) }
+            }
         }
     }
 
@@ -388,54 +396,62 @@ fun GlaiveScreen() {
                         modifier = Modifier.fillMaxSize(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        PaneBrowser(
-                            paneIndex = 0,
-                            modifier = Modifier
-                                .weight(splitFraction)
-                                .fillMaxHeight(),
-                            isGridView = isGridView,
-                            displayedList = displayedList,
-                            selectedPaths = selectedPaths,
-                            sortMode = sortMode,
-                            onItemClick = handleItemClick,
-                            onItemLongClick = handleItemLongPress
-                        )
-                        Box(
-                            modifier = Modifier
-                                .fillMaxHeight()
-                                .width(12.dp)
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(SurfaceGray.copy(alpha = 0.9f))
-                                .pointerInput(totalWidthPx) {
-                                    detectHorizontalDragGestures { _, dragAmount ->
-                                        if (totalWidthPx > 0f) {
-                                            val delta = dragAmount / totalWidthPx
-                                            splitFraction = (splitFraction + delta).coerceIn(minSplitFraction, maxSplitFraction)
-                                        }
-                                    }
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Box(
+                        if (maximizedPane == -1 || maximizedPane == 0) {
+                            PaneBrowser(
+                                paneIndex = 0,
                                 modifier = Modifier
-                                    .width(2.dp)
-                                    .fillMaxHeight(0.6f)
-                                    .clip(RoundedCornerShape(1.dp))
-                                    .background(AccentBlue.copy(alpha = 0.7f))
+                                    .weight(if (maximizedPane == 0) 1f else splitFraction)
+                                    .fillMaxHeight(),
+                                isGridView = isGridView,
+                                displayedList = displayedList,
+                                selectedPaths = selectedPaths,
+                                sortMode = sortMode,
+                                onItemClick = handleItemClick,
+                                onItemLongClick = handleItemLongPress,
+                                onMaximize = { maximizedPane = if (maximizedPane == 0) -1 else 0 }
                             )
                         }
-                        PaneBrowser(
-                            paneIndex = 1,
-                            modifier = Modifier
-                                .weight(1f - splitFraction)
-                                .fillMaxHeight(),
-                            isGridView = isGridView,
-                            displayedList = secondaryDisplayedList,
-                            selectedPaths = selectedPaths,
-                            sortMode = sortMode,
-                            onItemClick = handleItemClick,
-                            onItemLongClick = handleItemLongPress
-                        )
+                        if (maximizedPane == -1) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .width(12.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(SurfaceGray.copy(alpha = 0.9f))
+                                    .pointerInput(totalWidthPx) {
+                                        detectHorizontalDragGestures { _, dragAmount ->
+                                            if (totalWidthPx > 0f) {
+                                                val delta = dragAmount / totalWidthPx
+                                                splitFraction = (splitFraction + delta).coerceIn(minSplitFraction, maxSplitFraction)
+                                            }
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(2.dp)
+                                        .fillMaxHeight(0.6f)
+                                        .clip(RoundedCornerShape(1.dp))
+                                        .background(AccentBlue.copy(alpha = 0.7f))
+                                )
+                            }
+                        }
+                        if (maximizedPane == -1 || maximizedPane == 1) {
+                            PaneBrowser(
+                                paneIndex = 1,
+                                modifier = Modifier
+                                    .weight(if (maximizedPane == 1) 1f else 1f - splitFraction)
+                                    .fillMaxHeight(),
+                                isGridView = isGridView,
+                                displayedList = secondaryDisplayedList,
+                                selectedPaths = selectedPaths,
+                                sortMode = sortMode,
+                                onItemClick = handleItemClick,
+                                onItemLongClick = handleItemLongPress,
+                                onMaximize = { maximizedPane = if (maximizedPane == 1) -1 else 1 }
+                            )
+                        }
                     }
                 }
             } else {
@@ -447,7 +463,8 @@ fun GlaiveScreen() {
                     selectedPaths = selectedPaths,
                     sortMode = sortMode,
                     onItemClick = handleItemClick,
-                    onItemLongClick = handleItemLongPress
+                    onItemLongClick = handleItemLongPress,
+                    onMaximize = {}
                 )
             }
         }
@@ -685,7 +702,7 @@ fun GlaiveHeader(
                     }
                     IconButton(onClick = onSplitToggle, modifier = Modifier.clip(CircleShape).background(SurfaceGray)) {
                         Icon(
-                            imageVector =Icons.Default.MoreVert,
+                            imageVector =Icons.Default.CallSplit,
                             contentDescription = "Split",
                             tint = if (splitScopeEnabled) AccentGreen else SoftWhite
                         )
@@ -756,16 +773,6 @@ fun GlaiveHeader(
         ) {
             StatsBar(stats)
         }
-
-        SplitScopePreview(
-            enabled = splitScopeEnabled,
-            primaryPath = currentPath,
-            secondaryPath = secondaryPath,
-            history = pathHistory,
-            onHistoryJump = onHistoryJump,
-            activePane = activePane,
-            onPaneFocus = onPaneFocus
-        )
     }
 }
 
@@ -820,40 +827,53 @@ fun PaneBrowser(
     selectedPaths: Set<String>,
     sortMode: SortMode,
     onItemClick: (Int, GlaiveItem) -> Unit,
-    onItemLongClick: (Int, GlaiveItem) -> Unit
+    onItemLongClick: (Int, GlaiveItem) -> Unit,
+    onMaximize: (Int) -> Unit
 ) {
-    if (isGridView) {
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 100.dp),
-            modifier = modifier.fillMaxHeight(),
-            contentPadding = PaddingValues(bottom = 140.dp, top = 8.dp, start = 16.dp, end = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(displayedList, key = { it.path }) { item ->
-                FileGridItem(
-                    item = item,
-                    isSelected = selectedPaths.contains(item.path),
-                    onClick = { onItemClick(paneIndex, item) },
-                    onLongClick = { onItemLongClick(paneIndex, item) }
-                )
+    Box(modifier = modifier) {
+        if (isGridView) {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 100.dp),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 140.dp, top = 8.dp, start = 16.dp, end = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(displayedList, key = { it.path }) { item ->
+                    FileGridItem(
+                        item = item,
+                        isSelected = selectedPaths.contains(item.path),
+                        onClick = { onItemClick(paneIndex, item) },
+                        onLongClick = { onItemLongClick(paneIndex, item) }
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 140.dp, top = 8.dp, start = 16.dp, end = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(displayedList, key = { it.path }) { item ->
+                    FileCard(
+                        item = item,
+                        isSelected = selectedPaths.contains(item.path),
+                        sortMode = sortMode,
+                        onClick = { onItemClick(paneIndex, item) },
+                        onLongClick = { onItemLongClick(paneIndex, item) }
+                    )
+                }
             }
         }
-    } else {
-        LazyColumn(
-            modifier = modifier.fillMaxHeight(),
-            contentPadding = PaddingValues(bottom = 140.dp, top = 8.dp, start = 16.dp, end = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        IconButton(
+            onClick = { onMaximize(paneIndex) },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(8.dp)
+                .clip(CircleShape)
+                .background(SurfaceGray.copy(alpha = 0.8f))
         ) {
-            items(displayedList, key = { it.path }) { item ->
-                FileCard(
-                    item = item,
-                    isSelected = selectedPaths.contains(item.path),
-                    sortMode = sortMode,
-                    onClick = { onItemClick(paneIndex, item) },
-                    onLongClick = { onItemLongClick(paneIndex, item) }
-                )
-            }
+            Icon(imageVector = Icons.Default.AspectRatio, contentDescription = "Maximize", tint = SoftWhite)
         }
     }
 }
@@ -993,71 +1013,6 @@ fun StatItem(label: String, value: String) {
     }
 }
 
-@Composable
-fun SplitScopePreview(
-    enabled: Boolean,
-    primaryPath: String,
-    secondaryPath: String,
-    history: List<String>,
-    onHistoryJump: (String) -> Unit,
-    activePane: Int,
-    onPaneFocus: (Int) -> Unit
-) {
-    AnimatedVisibility(visible = enabled) {
-        val upcoming = history.firstOrNull()
-        val hasSecondaryPath = secondaryPath.isNotEmpty()
-        val secondaryDisplay = if (hasSecondaryPath) secondaryPath else upcoming ?: ""
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 12.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .background(SurfaceGray.copy(alpha = 0.7f))
-                .border(1.dp, AccentBlue.copy(alpha = 0.4f), RoundedCornerShape(24.dp))
-                .padding(16.dp)
-        ) {
-            Text(
-                text = "Split Scope",
-                style = TextStyle(color = AccentBlue, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                SplitPaneCard(
-                    modifier = Modifier.weight(1f),
-                    title = "Pane A",
-                    path = primaryPath,
-                    accent = AccentBlue,
-                    onClick = { onPaneFocus(0) },
-                    selected = activePane == 0
-                )
-                SplitPaneCard(
-                    modifier = Modifier.weight(1f),
-                    title = "Pane B",
-                    path = secondaryDisplay.takeIf { it.isNotEmpty() },
-                    accent = AccentGreen,
-                    onClick = when {
-                        hasSecondaryPath -> { { onPaneFocus(1) } }
-                        upcoming != null -> { { onHistoryJump(upcoming) } }
-                        else -> null
-                    },
-                    selected = activePane == 1
-                )
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            if (history.isNotEmpty()) {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(history.take(6)) { path ->
-                        HistoryChip(path = path, onClick = { onHistoryJump(path) })
-                    }
-                }
-            } else {
-                Text("No previous directories yet.", color = Color.Gray, fontSize = 12.sp)
-            }
-        }
-    }
-}
 
 @Composable
 fun SplitPaneCard(
@@ -1234,7 +1189,18 @@ fun FileGridItem(
             modifier = Modifier.size(48.dp).clip(CircleShape).background(getTypeColor(item.type).copy(alpha = 0.2f)),
             contentAlignment = Alignment.Center
         ) {
-            if (isSelected) Icon(imageVector =Icons.Default.Check, null, tint = AccentBlue) else Text(getTypeIcon(item.type), fontSize = 24.sp)
+            if (isSelected) {
+                Icon(imageVector =Icons.Default.Check, null, tint = AccentBlue)
+            } else if (item.type == GlaiveItem.TYPE_IMG) {
+                AsyncImage(
+                    model = File(item.path),
+                    contentDescription = item.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Text(getTypeIcon(item.type), fontSize = 24.sp)
+            }
         }
         Spacer(modifier = Modifier.height(8.dp))
         Text(item.name, color = SoftWhite, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, textAlign = TextAlign.Center)
