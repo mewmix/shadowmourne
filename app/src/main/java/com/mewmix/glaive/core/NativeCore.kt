@@ -5,7 +5,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import kotlin.math.max
 
 object NativeCore {
     init {
@@ -26,7 +25,7 @@ object NativeCore {
                 emptyList()
             } else {
                 // Copy to a new buffer to ensure stability (One-Copy)
-                val stableBuffer = ByteBuffer.allocate(filledBytes)
+                val stableBuffer = ByteBuffer.allocate(filledBytes).order(ByteOrder.LITTLE_ENDIAN)
                 sharedBuffer.position(0)
                 sharedBuffer.limit(filledBytes)
                 stableBuffer.put(sharedBuffer)
@@ -43,7 +42,7 @@ object NativeCore {
                 emptyList()
             } else {
                 // Copy to a new buffer to ensure stability (One-Copy)
-                val stableBuffer = ByteBuffer.allocate(filledBytes)
+                val stableBuffer = ByteBuffer.allocate(filledBytes).order(ByteOrder.LITTLE_ENDIAN)
                 sharedBuffer.position(0)
                 sharedBuffer.limit(filledBytes)
                 stableBuffer.put(sharedBuffer)
