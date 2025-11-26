@@ -5,7 +5,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import kotlin.math.max
 
 object NativeCore {
     init {
@@ -16,49 +15,40 @@ object NativeCore {
         ByteBuffer.allocateDirect(4 * 1024 * 1024).order(ByteOrder.LITTLE_ENDIAN)
     private val bufferLock = Any()
 
-    private external fun nativeFillBuffer(path: String, buffer: ByteBuffer, capacity: Int): Int
-    private external fun nativeSearch(root: String, query: String): Array<GlaiveItem>?
+    private external fun nativeFillBuffer(path: String, buffer: ByteBuffer, capacity: Int, sortMode: Int, asc: Boolean, filterMask: Int): Int
+    private external fun nativeSearch(root: String, query: String, buffer: ByteBuffer, capacity: Int, filterMask: Int): Int
 
-    suspend fun list(currentPath: String): List<GlaiveItem> = withContext(Dispatchers.IO) {
+    suspend fun list(currentPath: String, sortMode: Int = 0, asc: Boolean = true, filterMask: Int = 0): List<GlaiveItem> = withContext(Dispatchers.IO) {
         synchronized(bufferLock) {
-            val filledBytes = nativeFillBuffer(currentPath, sharedBuffer, sharedBuffer.capacity())
+            val filledBytes = nativeFillBuffer(currentPath, sharedBuffer, sharedBuffer.capacity(), sortMode, asc, filterMask)
             if (filledBytes <= 0) {
                 emptyList()
             } else {
-                val cursor = GlaiveCursor(sharedBuffer, currentPath, filledBytes)
-                val list = ArrayList<GlaiveItem>(cursor.approxCount)
-                while (cursor.hasNext()) {
-                    list.add(cursor.next())
-                }
-                list
+                // Copy to a new buffer to ensure stability (One-Copy)
+                val stableBuffer = ByteBuffer.allocate(filledBytes).order(ByteOrder.LITTLE_ENDIAN)
+                sharedBuffer.position(0)
+                sharedBuffer.limit(filledBytes)
+                stableBuffer.put(sharedBuffer)
+                stableBuffer.rewind()
+                GlaiveLazyList(stableBuffer, currentPath, filledBytes)
             }
         }
     }
 
-    fun listFast(path: String): GlaiveCursor {
-        val filledBytes = synchronized(bufferLock) {
-            nativeFillBuffer(path, sharedBuffer, sharedBuffer.capacity())
-        }
-        return GlaiveCursor(sharedBuffer, path, max(0, filledBytes))
-    }
-
-    suspend fun search(root: String, query: String): List<GlaiveItem> = withContext(Dispatchers.IO) {
-        val results = nativeSearch(root, query)?.filterNotNull() ?: return@withContext emptyList()
-        results.onEach { item ->
-            if (item.type == GlaiveItem.TYPE_FILE || item.type == GlaiveItem.TYPE_UNKNOWN) {
-                item.type = getRefinedType(item.name)
+    suspend fun search(root: String, query: String, filterMask: Int = 0): List<GlaiveItem> = withContext(Dispatchers.IO) {
+        synchronized(bufferLock) {
+            val filledBytes = nativeSearch(root, query, sharedBuffer, sharedBuffer.capacity(), filterMask)
+            if (filledBytes <= 0) {
+                emptyList()
+            } else {
+                // Copy to a new buffer to ensure stability (One-Copy)
+                val stableBuffer = ByteBuffer.allocate(filledBytes).order(ByteOrder.LITTLE_ENDIAN)
+                sharedBuffer.position(0)
+                sharedBuffer.limit(filledBytes)
+                stableBuffer.put(sharedBuffer)
+                stableBuffer.rewind()
+                GlaiveLazyList(stableBuffer, root, filledBytes)
             }
-        }
-    }
-
-    private fun getRefinedType(name: String): Int {
-        val ext = name.substringAfterLast('.', "").lowercase()
-        return when (ext) {
-            "jpg", "jpeg", "png", "gif", "webp", "bmp" -> GlaiveItem.TYPE_IMG
-            "mp4", "mkv", "webm", "avi", "mov", "3gp" -> GlaiveItem.TYPE_VID
-            "apk" -> GlaiveItem.TYPE_APK
-            "pdf", "doc", "docx", "txt", "md", "xls", "xlsx", "ppt", "pptx" -> GlaiveItem.TYPE_DOC
-            else -> GlaiveItem.TYPE_FILE
         }
     }
 }
