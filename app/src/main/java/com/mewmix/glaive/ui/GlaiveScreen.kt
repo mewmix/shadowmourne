@@ -15,8 +15,11 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -41,18 +44,17 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.filled.BubbleChart
 import androidx.compose.material.icons.filled.CallSplit
 import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.ViewList
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -99,14 +101,18 @@ import java.io.File
 import java.util.Locale
 import kotlin.system.measureTimeMillis
 
-// --- THEME COLORS ---
-val DeepSpace = Color(0xFF121212)
-val SurfaceGray = Color(0xFF1E1E1E)
-val SoftWhite = Color(0xFFE0E0E0)
-val AccentPurple = Color(0xFFBB86FC)
-val AccentBlue = Color(0xFF03DAC6)
-val AccentGreen = Color(0xFF00E676)
-val DangerRed = Color(0xFFCF6679)
+// --- THEME COLORS (UNIFIED GREEN) ---
+val DeepSpace = Color(0xFF0A0A0A)
+val SurfaceGray = Color(0xFF181818)
+val SoftWhite = Color(0xFFEEEEEE)
+val NeonGreen = Color(0xFF00E676) 
+val DarkGreen = Color(0xFF003318)
+val DangerRed = Color(0xFFD32F2F)
+
+// Aliases to maintain code compatibility
+val AccentPurple = NeonGreen 
+val AccentBlue = NeonGreen
+val AccentGreen = NeonGreen
 
 enum class SortMode { NAME, DATE, SIZE, TYPE }
 
@@ -174,15 +180,6 @@ fun GlaiveScreen() {
         if (index == 0) currentTab = tab else secondaryCurrentTab = tab
     }
 
-    fun showNavigationPane() {
-        contextMenuTarget = null
-        if (navigationPaneVisible) {
-            navigationPanePulse++
-        } else {
-            navigationPaneVisible = true
-        }
-    }
-
     fun keepNavigationPaneAlive() {
         if (navigationPaneVisible) {
             navigationPanePulse++
@@ -206,11 +203,6 @@ fun GlaiveScreen() {
         }
     }
     
-    // Processed List State (Directly from Native)
-    // We no longer need separate displayedList because rawList IS the displayed list (sorted/filtered by native)
-    // But we need to trigger reload when sort/filter changes.
-    
-    // Helper to convert filters to mask
     fun getFilterMask(filters: Set<Int>): Int {
         var mask = 0
         for (type in filters) mask = mask or (1 shl type)
@@ -255,7 +247,6 @@ fun GlaiveScreen() {
 
     // Load Data / Search with Debounce
     LaunchedEffect(currentPath, searchQuery, currentTab, sortMode, sortAscending, activeFilters) {
-        // Cancel previous job implicitly by LaunchedEffect restart
         DebugLogger.logSuspend("Loading data for path: $currentPath") {
             if (currentTab == 1) {
                 rawList = RecentFilesManager.getRecents(context)
@@ -269,8 +260,6 @@ fun GlaiveScreen() {
                     )
                 } else {
                     delay(300)
-                    // Search doesn't support sort yet in C (it wasn't in instructions), 
-                    // but it does support filter.
                     rawList = NativeCore.search(currentPath, searchQuery, getFilterMask(activeFilters))
                 }
             }
@@ -355,7 +344,6 @@ fun GlaiveScreen() {
     val activePanePath = panePath(activePane)
     val activePaneSearch = paneIsSearchActive(activePane)
 
-    // Back Handler
     BackHandler(enabled = (activePanePath != "/storage/emulated/0" || activePaneSearch || selectedPaths.isNotEmpty()) || (splitScopeEnabled && secondaryPath != "/storage/emulated/0")) {
         if (selectedPaths.isNotEmpty()) {
             selectedPaths = emptySet()
@@ -399,7 +387,7 @@ fun GlaiveScreen() {
 
         Column(modifier = Modifier.fillMaxSize()) {
             
-            // -- TOP HEADER --
+            // -- TOP HEADER (CONDENSED & COLLAPSIBLE) --
             GlaiveHeader(
                 currentPath = activePanePath,
                 isSearchActive = activePaneSearch,
@@ -407,10 +395,6 @@ fun GlaiveScreen() {
                 onSearchQueryChange = { setPaneSearchQuery(activePane, it) },
                 onToggleSearch = { toggleSearch(activePane) },
                 onPathJump = { navigateTo(activePane, it) },
-                onHomeJump = { 
-                    navigateTo(activePane, "/storage/emulated/0")
-                    setPaneCurrentTab(activePane, 0)
-                },
                 currentTab = paneCurrentTab(activePane),
                 onTabChange = { setPaneCurrentTab(activePane, it) },
                 isGridView = isGridView,
@@ -419,12 +403,6 @@ fun GlaiveScreen() {
                 stats = stats,
                 splitScopeEnabled = splitScopeEnabled,
                 onSplitToggle = { splitScopeEnabled = !splitScopeEnabled },
-                onShowNavigationPane = { showNavigationPane() },
-                pathHistory = pathHistory,
-                onHistoryJump = { navigateTo(activePane, it) },
-                activePane = activePane,
-                onPaneFocus = { activePane = it },
-                secondaryPath = secondaryPath,
             )
             
             // -- FILTER BAR --
@@ -650,7 +628,6 @@ fun GlaiveScreen() {
                         val targetFile = File(contextMenuTarget!!.path)
                         val zipFile = File(targetFile.parent, "${targetFile.name}.zip")
                         if (targetFile.canonicalPath == zipFile.canonicalPath) {
-                            // Guard rail: don't zip a file into itself
                             Toast.makeText(context, "Cannot zip a file into itself", Toast.LENGTH_SHORT).show()
                             return@launch
                         }
@@ -720,7 +697,6 @@ fun GlaiveHeader(
     onSearchQueryChange: (String) -> Unit,
     onToggleSearch: () -> Unit,
     onPathJump: (String) -> Unit,
-    onHomeJump: () -> Unit,
     currentTab: Int,
     onTabChange: (Int) -> Unit,
     isGridView: Boolean,
@@ -729,16 +705,12 @@ fun GlaiveHeader(
     stats: GlaiveStats,
     splitScopeEnabled: Boolean,
     onSplitToggle: () -> Unit,
-    onShowNavigationPane: () -> Unit,
-    pathHistory: List<String>,
-    onHistoryJump: (String) -> Unit,
-    activePane: Int,
-    onPaneFocus: (Int) -> Unit,
-    secondaryPath: String,
-
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusRequester = remember { FocusRequester() }
+    
+    // State to toggle the "Press and Reveal" tool buttons
+    var toolsExpanded by remember { mutableStateOf(false) }
 
     LaunchedEffect(isSearchActive) {
         if (isSearchActive) {
@@ -749,127 +721,173 @@ fun GlaiveHeader(
         }
     }
 
-    val headerTitle = when {
-        isSearchActive -> "Search"
-        currentTab == 1 -> "Recent Files"
-        else -> "Browse"
+    // Auto-collapse tools if search becomes active
+    LaunchedEffect(isSearchActive) {
+        if (isSearchActive) toolsExpanded = true
     }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(DeepSpace, DeepSpace.copy(alpha = 0.9f))
-                )
-            )
-            .padding(top = 16.dp, bottom = 8.dp)
+            .background(DeepSpace)
+            .padding(top = 16.dp, bottom = 4.dp)
     ) {
-        // Tab Row
+        // --- TOP ROW: Tabs (Left) & Minimal Stats (Right) ---
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.Center
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            TabButton("Browse", currentTab == 0) { onTabChange(0) }
-            Spacer(modifier = Modifier.width(16.dp))
-            TabButton("Recents", currentTab == 1) { onTabChange(1) }
-        }
-
-        // Title Row
-        Column(
-            modifier = Modifier.padding(horizontal = 24.dp)
-        ) {
-            StatsBar(stats)
-            
-            Spacer(modifier = Modifier.height(8.dp))
-
+            // Sleek Tab Switcher
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.End
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(SurfaceGray)
+                    .padding(2.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                // Shortcuts
-                if (!isSearchActive && currentTab == 0) {
-                    IconButton(onClick = onAddClick, modifier = Modifier.clip(CircleShape).background(SurfaceGray)) {
-                        Icon(imageVector =Icons.Default.Add, contentDescription = "New", tint = AccentGreen)
-                    }
-                    IconButton(onClick = onToggleView, modifier = Modifier.clip(CircleShape).background(SurfaceGray)) {
-                        Icon(imageVector = if (isGridView) Icons.Default.List else Icons.Default.Menu, contentDescription = "View", tint = SoftWhite)
-                    }
-                    IconButton(onClick = onSplitToggle, modifier = Modifier.clip(CircleShape).background(SurfaceGray)) {
-                        Icon(
-                            imageVector =Icons.Default.CallSplit,
-                            contentDescription = "Split",
-                            tint = if (splitScopeEnabled) AccentGreen else SoftWhite
-                        )
-                    }
+                TabItem("BROWSE", currentTab == 0) { onTabChange(0) }
+                TabItem("RECENTS", currentTab == 1) { onTabChange(1) }
+            }
 
-                    IconButton(onClick = onHomeJump, modifier = Modifier.clip(CircleShape).background(SurfaceGray)) {
-                        Icon(imageVector =Icons.Default.Home, contentDescription = "Home", tint = SoftWhite)
-                    }
-                }
-
-                IconButton(
-                    onClick = onShowNavigationPane,
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .background(SurfaceGray)
-                ) {
-                    Icon(imageVector = Icons.Default.KeyboardArrowRight, contentDescription = "Navigation Pane", tint = AccentBlue)
-                }
-
-                IconButton(
-                    onClick = onToggleSearch,
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .background(SurfaceGray)
-                ) {
-                    Icon(imageVector = if (isSearchActive) Icons.Default.KeyboardArrowUp else Icons.Default.Search,
-                        contentDescription = "Search",
-                        tint = AccentBlue
-                    )
-                }
+            // Minimal Stats
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "${stats.fileCount}F · ${stats.dirCount}D ",
+                    style = TextStyle(color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = formatSize(stats.totalSize),
+                    style = TextStyle(color = NeonGreen, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                )
             }
         }
-        // ... (Search Bar / Breadcrumbs logic remains same)
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // Breadcrumbs or Search Bar
-        AnimatedContent(targetState = isSearchActive, label = "HeaderMode") { searching ->
-            if (searching) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(SurfaceGray)
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
-                ) {
-                    BasicTextField(
-                        value = searchQuery,
-                        onValueChange = onSearchQueryChange,
-                        textStyle = TextStyle(color = SoftWhite, fontSize = 16.sp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusRequester(focusRequester),
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(
-                            onSearch = { keyboardController?.hide() }
-                        ),
-                        decorationBox = { innerTextField ->
-                            if (searchQuery.isEmpty()) Text("Type to hunt...", color = Color.Gray)
-                            innerTextField()
+        // --- BOTTOM ROW: Breadcrumbs OR Tools (Press and Reveal) ---
+        // Layout: [ Content Area (Weight 1) ] [ Menu Toggle ]
+        
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            
+            // EXPANDABLE CONTENT AREA
+            Box(modifier = Modifier.weight(1f).height(42.dp), contentAlignment = Alignment.CenterStart) {
+                androidx.compose.animation.AnimatedContent(
+                    targetState = toolsExpanded || isSearchActive,
+                    transitionSpec = {
+                        (fadeIn() + slideInHorizontally { -it/2 }).togetherWith(fadeOut() + slideOutHorizontally { -it/2 })
+                    },
+                    label = "HeaderTools"
+                ) { showTools ->
+                    if (showTools) {
+                        // -- TOOLBAR MODE --
+                        if (isSearchActive) {
+                            // Search Field
+                            BasicTextField(
+                                value = searchQuery,
+                                onValueChange = onSearchQueryChange,
+                                textStyle = TextStyle(color = SoftWhite, fontSize = 16.sp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .focusRequester(focusRequester),
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() }),
+                                decorationBox = { innerTextField ->
+                                    if (searchQuery.isEmpty()) Text("Type to hunt...", color = Color.Gray)
+                                    innerTextField()
+                                }
+                            )
+                        } else {
+                            // Action Icons Row
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                MinimalIcon(Icons.Default.Add, onAddClick)
+                                MinimalIcon(if (isGridView) Icons.Default.ViewList else Icons.Default.GridView, onToggleView)
+                                MinimalIcon(Icons.Default.CallSplit, onSplitToggle, if (splitScopeEnabled) NeonGreen else Color.Gray)
+                                MinimalIcon(Icons.Default.Search, onToggleSearch)
+                            }
                         }
-                    )
+                    } else {
+                        // -- BREADCRUMB MODE --
+                        BreadcrumbStrip(currentPath, onPathJump)
+                    }
                 }
-            } else {
-                BreadcrumbStrip(currentPath, onPathJump)
+            }
+            
+            Spacer(modifier = Modifier.width(8.dp))
+
+            // MENU TOGGLE BUTTON
+            // Rotates when expanded
+            IconButton(
+                onClick = { 
+                    if (isSearchActive) {
+                        onToggleSearch() // Close search if active
+                    } else {
+                        toolsExpanded = !toolsExpanded 
+                    }
+                },
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(SurfaceGray)
+            ) {
+                val icon = if (toolsExpanded || isSearchActive) Icons.Default.Close else Icons.Default.Menu
+                Icon(
+                    imageVector = icon,
+                    contentDescription = "Menu",
+                    tint = if(toolsExpanded) NeonGreen else SoftWhite
+                )
             }
         }
+    }
+}
 
-        Spacer(modifier = Modifier.height(8.dp))
+@Composable
+fun TabItem(text: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (selected) DeepSpace else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Text(
+            text = text,
+            style = TextStyle(
+                color = if (selected) NeonGreen else Color.Gray,
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.sp
+            )
+        )
+    }
+}
+
+@Composable
+fun MinimalIcon(
+    icon: ImageVector,
+    onClick: () -> Unit,
+    tint: Color = SoftWhite
+) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+            .background(SurfaceGray.copy(alpha = 0.5f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(imageVector = icon, contentDescription = null, tint = tint)
     }
 }
 
@@ -883,33 +901,38 @@ fun BreadcrumbStrip(currentPath: String, onPathJump: (String) -> Unit) {
             acc += "/$segment"
             if (hidden.contains(segment)) return@forEach
             val label = when (segment) {
-                "0" -> "Internal"
+                "0" -> "INT"
                 else -> segment
             }
             list.add(label to acc)
         }
-        if (list.isEmpty()) listOf("Root" to "/") else list
+        if (list.isEmpty()) listOf("ROOT" to "/") else list
     }
 
     LazyRow(
-        contentPadding = PaddingValues(horizontal = 24.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         items(segments) { (name, path) ->
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(SurfaceGray)
-                    .clickable { onPathJump(path) }
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-            ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = name,
+                    text = name.uppercase(),
                     style = TextStyle(
-                        color = if (path == currentPath) AccentBlue else Color.Gray,
-                        fontWeight = FontWeight.Medium
-                    )
+                        color = if (path == currentPath) NeonGreen else Color.Gray,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp
+                    ),
+                    modifier = Modifier
+                        .clickable { onPathJump(path) }
+                        .padding(horizontal = 2.dp, vertical = 4.dp)
                 )
+                if (path != currentPath) {
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = DarkGreen,
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
             }
         }
     }
@@ -932,7 +955,6 @@ fun PaneBrowser(
 ) {
     var showMaximizeButton by remember { mutableStateOf(true) }
     
-    // Auto-hide maximize button
     LaunchedEffect(showMaximizeButton) {
         if (showMaximizeButton) {
             delay(3000)
@@ -1005,7 +1027,7 @@ fun PaneBrowser(
                     .clip(CircleShape)
                     .background(SurfaceGray.copy(alpha = 0.8f))
             ) {
-                Icon(imageVector = Icons.Default.AspectRatio, contentDescription = "Maximize", tint = AccentGreen)
+                Icon(imageVector = Icons.Default.AspectRatio, contentDescription = "Maximize", tint = NeonGreen)
             }
         }
     }
@@ -1026,13 +1048,13 @@ fun FileCard(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(72.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .background(if (isSelected) AccentBlue.copy(alpha = 0.2f) else SurfaceGray)
+            .height(64.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (isSelected) NeonGreen.copy(alpha = 0.15f) else SurfaceGray)
             .border(
-                width = if (isSelected) 2.dp else 0.dp,
-                color = if (isSelected) AccentBlue else Color.Transparent,
-                shape = RoundedCornerShape(24.dp)
+                width = if (isSelected) 1.dp else 0.dp,
+                color = if (isSelected) NeonGreen else Color.Transparent,
+                shape = RoundedCornerShape(12.dp)
             )
             .combinedClickable(
                 onClick = { 
@@ -1044,37 +1066,32 @@ fun FileCard(
                     onLongClick()
                 }
             )
-            .padding(12.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Icon Bubble
         Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clip(CircleShape)
-                .background(getTypeColor(item.type).copy(alpha = 0.2f)),
+            modifier = Modifier.size(32.dp),
             contentAlignment = Alignment.Center
         ) {
             if (isSelected) {
-                Icon(imageVector =Icons.Default.Check, contentDescription = null, tint = AccentBlue)
+                Icon(imageVector = Icons.Default.Check, contentDescription = null, tint = NeonGreen)
             } else {
                 Text(
                     text = getTypeIcon(item.type),
-                    fontSize = 20.sp
+                    fontSize = 18.sp
                 )
             }
         }
 
         Spacer(modifier = Modifier.width(16.dp))
 
-        // Info
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = item.name,
                 style = TextStyle(
-                    color = SoftWhite,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold
+                    color = if (isSelected) NeonGreen else SoftWhite,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium
                 ),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -1082,11 +1099,7 @@ fun FileCard(
             
             val infoText = when {
                 item.type == GlaiveItem.TYPE_DIR -> {
-                    if (directorySize != null) {
-                        formatSize(directorySize)
-                    } else {
-                        "Calculating..."
-                    }
+                    if (directorySize != null) formatSize(directorySize) else "..."
                 }
                 sortMode == SortMode.DATE -> formatDate(item.mtime)
                 sortMode == SortMode.SIZE -> formatSize(item.size)
@@ -1097,56 +1110,10 @@ fun FileCard(
                 text = infoText,
                 style = TextStyle(
                     color = Color.Gray,
-                    fontSize = 12.sp
+                    fontSize = 11.sp
                 )
             )
         }
-
-        // Action Indicator
-        if (item.type == GlaiveItem.TYPE_DIR) {
-            Icon(imageVector = Icons.Default.KeyboardArrowRight,
-                contentDescription = null,
-                tint = Color.Gray
-            )
-        }
-    }
-}
-
-@Composable
-fun StatsBar(stats: GlaiveStats) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(SurfaceGray.copy(alpha = 0.8f))
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        StatItem("Files", "${stats.fileCount}")
-        StatItem("Dirs", "${stats.dirCount}")
-        StatItem("Total", formatSize(stats.totalSize))
-        if (stats.selectedSize > 0) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(AccentBlue)
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    text = "Sel: ${formatSize(stats.selectedSize)}",
-                    style = TextStyle(color = DeepSpace, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun StatItem(label: String, value: String) {
-    Row(verticalAlignment = Alignment.Bottom) {
-        Text(text = value, style = TextStyle(color = SoftWhite, fontWeight = FontWeight.Bold, fontSize = 12.sp))
-        Spacer(modifier = Modifier.width(2.dp))
-        Text(text = label, style = TextStyle(color = Color.Gray, fontSize = 10.sp))
     }
 }
 
@@ -1164,18 +1131,18 @@ fun NavigationPaneOverlay(
 ) {
     val quickTargets = remember {
         listOf(
-            "Internal" to "/storage/emulated/0",
-            "Downloads" to "/storage/emulated/0/Download",
+            "INT" to "/storage/emulated/0",
+            "DL" to "/storage/emulated/0/Download",
             "DCIM" to "/storage/emulated/0/DCIM",
-            "Movies" to "/storage/emulated/0/Movies",
-            "Documents" to "/storage/emulated/0/Documents"
+            "MOV" to "/storage/emulated/0/Movies",
+            "DOC" to "/storage/emulated/0/Documents"
         )
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.92f))
+            .background(Color.Black.copy(alpha = 0.95f))
     ) {
         Column(
             modifier = Modifier
@@ -1186,7 +1153,7 @@ fun NavigationPaneOverlay(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = "Navigation Pane",
+                    text = "Navigation",
                     style = TextStyle(color = SoftWhite, fontWeight = FontWeight.Bold, fontSize = 20.sp),
                     modifier = Modifier.weight(1f)
                 )
@@ -1200,11 +1167,6 @@ fun NavigationPaneOverlay(
                 }
             }
 
-            Text(
-                text = "Focus a pane, then pick a target. Pane closes automatically after a short delay.",
-                style = TextStyle(color = Color.Gray, fontSize = 12.sp)
-            )
-
             if (splitScopeEnabled) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1214,7 +1176,7 @@ fun NavigationPaneOverlay(
                         modifier = Modifier.weight(1f),
                         title = "PANE A",
                         path = currentPath,
-                        accent = AccentBlue,
+                        accent = NeonGreen,
                         onClick = {
                             onInteract()
                             onPaneFocus(0)
@@ -1225,7 +1187,7 @@ fun NavigationPaneOverlay(
                         modifier = Modifier.weight(1f),
                         title = "PANE B",
                         path = secondaryPath,
-                        accent = AccentPurple,
+                        accent = NeonGreen,
                         onClick = {
                             onInteract()
                             onPaneFocus(1)
@@ -1236,9 +1198,9 @@ fun NavigationPaneOverlay(
             } else {
                 SplitPaneCard(
                     modifier = Modifier.fillMaxWidth(),
-                    title = "ACTIVE PANE",
+                    title = "ACTIVE",
                     path = currentPath,
-                    accent = AccentBlue,
+                    accent = NeonGreen,
                     onClick = {
                         onInteract()
                         onPaneFocus(0)
@@ -1250,7 +1212,7 @@ fun NavigationPaneOverlay(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "Quick Roots",
-                    style = TextStyle(color = AccentBlue, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                    style = TextStyle(color = NeonGreen, fontWeight = FontWeight.Medium, fontSize = 14.sp)
                 )
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(quickTargets) { (label, path) ->
@@ -1269,7 +1231,7 @@ fun NavigationPaneOverlay(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "History",
-                    style = TextStyle(color = AccentGreen, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                    style = TextStyle(color = NeonGreen, fontWeight = FontWeight.Medium, fontSize = 14.sp)
                 )
                 if (pathHistory.isEmpty()) {
                     Text("No history yet.", color = Color.Gray, fontSize = 12.sp)
@@ -1302,27 +1264,20 @@ fun SplitPaneCard(
     selected: Boolean = false
 ) {
     val label = path?.trimEnd('/')?.substringAfterLast("/")?.ifEmpty { "Root" } ?: "—"
-    val pathLine = path ?: ""
-    val clickModifier = if (path != null && onClick != null) {
-        Modifier.clickable(onClick = onClick)
-    } else {
-        Modifier
-    }
+    val clickModifier = if (path != null && onClick != null) Modifier.clickable(onClick = onClick) else Modifier
     val borderColor = if (selected) accent else accent.copy(alpha = 0.4f)
     val backgroundColor = if (selected) DeepSpace.copy(alpha = 0.9f) else DeepSpace.copy(alpha = 0.7f)
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(backgroundColor)
-            .border(1.dp, borderColor, RoundedCornerShape(20.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(12.dp))
             .then(clickModifier)
             .padding(12.dp)
     ) {
         Text(title.uppercase(Locale.ROOT), color = accent, fontSize = 11.sp, fontWeight = FontWeight.Medium)
         Spacer(modifier = Modifier.height(4.dp))
         Text(label, color = SoftWhite, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(pathLine.ifEmpty { "..." }, color = Color.Gray, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -1331,14 +1286,13 @@ fun HistoryChip(path: String, label: String? = null, onClick: () -> Unit) {
     val resolvedLabel = label ?: path.trimEnd('/').substringAfterLast("/").ifEmpty { "Root" }
     Column(
         modifier = Modifier
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(8.dp))
             .background(DeepSpace.copy(alpha = 0.8f))
-            .border(1.dp, SurfaceGray, RoundedCornerShape(16.dp))
+            .border(1.dp, SurfaceGray, RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
         Text(resolvedLabel, color = SoftWhite, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-        Text(path, color = Color.Gray, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -1382,7 +1336,7 @@ fun ReverseGestureHotZone(
             Icon(
                 imageVector =Icons.Default.KeyboardArrowLeft,
                 contentDescription = "Reverse",
-                tint = AccentGreen,
+                tint = NeonGreen,
                 modifier = Modifier.align(Alignment.Center)
             )
         }
@@ -1411,10 +1365,10 @@ fun ControlDock(
     ) {
         if (selectionActive) {
             IconButton(onClick = onClearSelection) { Icon(imageVector =Icons.Default.Close, contentDescription = "Clear", tint = DangerRed) }
-            IconButton(onClick = onShareSelection) { Icon(imageVector =Icons.Default.Share, contentDescription = "Share", tint = AccentBlue) }
+            IconButton(onClick = onShareSelection) { Icon(imageVector =Icons.Default.Share, contentDescription = "Share", tint = NeonGreen) }
         } else if (clipboardActive) {
             IconButton(onClick = onPaste) {
-                Icon(imageVector = Icons.Default.ContentPaste, contentDescription = "Paste", tint = AccentGreen)
+                Icon(imageVector = Icons.Default.ContentPaste, contentDescription = "Paste", tint = NeonGreen)
             }
         } else {
             SortChip("Name", SortMode.NAME, currentSort, ascending, onSortChange)
@@ -1422,19 +1376,6 @@ fun ControlDock(
             SortChip("Date", SortMode.DATE, currentSort, ascending, onSortChange)
             SortChip("Type", SortMode.TYPE, currentSort, ascending, onSortChange)
         }
-    }
-}
-
-@Composable
-fun TabButton(text: String, selected: Boolean, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(if (selected) AccentBlue else SurfaceGray)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-    ) {
-        Text(text, color = if (selected) DeepSpace else SoftWhite, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -1449,22 +1390,22 @@ fun FileGridItem(
     val haptic = LocalHapticFeedback.current
     Column(
         modifier = Modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(if (isSelected) AccentBlue.copy(alpha = 0.2f) else SurfaceGray)
-            .border(if (isSelected) 2.dp else 0.dp, if (isSelected) AccentBlue else Color.Transparent, RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (isSelected) NeonGreen.copy(alpha = 0.15f) else SurfaceGray)
+            .border(if (isSelected) 1.dp else 0.dp, if (isSelected) NeonGreen else Color.Transparent, RoundedCornerShape(12.dp))
             .combinedClickable(
                 onClick = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() },
                 onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onLongClick() }
             )
-            .padding(12.dp),
+            .padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
-            modifier = Modifier.size(48.dp).clip(CircleShape).background(getTypeColor(item.type).copy(alpha = 0.2f)),
+            modifier = Modifier.size(40.dp).clip(CircleShape).background(getTypeColor(item.type).copy(alpha = 0.2f)),
             contentAlignment = Alignment.Center
         ) {
             if (isSelected) {
-                Icon(imageVector =Icons.Default.Check, null, tint = AccentBlue)
+                Icon(imageVector =Icons.Default.Check, null, tint = NeonGreen)
             } else if (item.type == GlaiveItem.TYPE_IMG) {
                 AsyncImage(
                     model = File(item.path),
@@ -1473,11 +1414,11 @@ fun FileGridItem(
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
-                Text(getTypeIcon(item.type), fontSize = 24.sp)
+                Text(getTypeIcon(item.type), fontSize = 20.sp)
             }
         }
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(item.name, color = SoftWhite, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, textAlign = TextAlign.Center)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(item.name, color = SoftWhite, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 11.sp, textAlign = TextAlign.Center)
     }
 }
 
@@ -1547,7 +1488,7 @@ fun CreateDialog(onDismiss: () -> Unit, onCreate: (String, Boolean) -> Unit) {
             }
         },
         confirmButton = {
-            Button(onClick = { onCreate(name, isDir) }, colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)) {
+            Button(onClick = { onCreate(name, isDir) }, colors = ButtonDefaults.buttonColors(containerColor = NeonGreen)) {
                 Text("Create")
             }
         }
@@ -1571,7 +1512,7 @@ fun TextEditor(file: File, onDismiss: () -> Unit, onSave: (String) -> Unit) {
             )
         },
         confirmButton = {
-            Button(onClick = { onSave(content) }, colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)) {
+            Button(onClick = { onSave(content) }, colors = ButtonDefaults.buttonColors(containerColor = NeonGreen)) {
                 Text("Save")
             }
         },
@@ -1609,7 +1550,7 @@ fun FilterChip(
     enabled: Boolean = true
 ) {
     val isSelected = activeFilters.contains(type)
-    val backgroundColor = if (isSelected) AccentBlue else SurfaceGray
+    val backgroundColor = if (isSelected) NeonGreen else SurfaceGray
     val textColor = if (isSelected) DeepSpace else SoftWhite
     
     Box(
@@ -1633,7 +1574,7 @@ fun SortChip(
     onClick: (SortMode) -> Unit
 ) {
     val isSelected = mode == current
-    val background = if (isSelected) AccentBlue else Color.Transparent
+    val background = if (isSelected) NeonGreen else Color.Transparent
     val textColor = if (isSelected) Color.Black else Color.Gray
 
     Row(
@@ -1665,8 +1606,8 @@ fun SortChip(
 // --- UTILS ---
 
 fun getTypeColor(type: Int): Color = when (type) {
-    GlaiveItem.TYPE_DIR -> AccentPurple
-    GlaiveItem.TYPE_IMG -> AccentBlue
+    GlaiveItem.TYPE_DIR -> NeonGreen
+    GlaiveItem.TYPE_IMG -> Color(0xFF2979FF)
     GlaiveItem.TYPE_VID -> DangerRed
     GlaiveItem.TYPE_APK -> Color(0xFFB2FF59)
     else -> Color.Gray
@@ -1696,7 +1637,7 @@ fun formatSize(bytes: Long): String {
 fun formatDate(millis: Long): String {
     if (millis <= 0) return "--"
     val date = java.util.Date(millis)
-    val format = java.text.SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.US)
+    val format = java.text.SimpleDateFormat("MMM dd, yyyy", Locale.US)
     return format.format(date)
 }
 
@@ -1754,6 +1695,7 @@ fun IconButton(onClick: () -> Unit, modifier: Modifier = Modifier, content: @Com
     Box(
         modifier = modifier
             .size(40.dp)
+            .clip(CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
