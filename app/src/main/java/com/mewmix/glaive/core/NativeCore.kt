@@ -17,6 +17,11 @@ object NativeCore {
 
     private external fun nativeFillBuffer(path: String, buffer: ByteBuffer, capacity: Int, sortMode: Int, asc: Boolean, filterMask: Int): Int
     private external fun nativeSearch(root: String, query: String, buffer: ByteBuffer, capacity: Int, filterMask: Int): Int
+    private external fun nativeCalculateDirectorySize(path: String): Long
+
+    suspend fun calculateDirectorySize(path: String): Long = withContext(Dispatchers.IO) {
+        nativeCalculateDirectorySize(path)
+    }
 
     suspend fun list(currentPath: String, sortMode: Int = 0, asc: Boolean = true, filterMask: Int = 0): List<GlaiveItem> = withContext(Dispatchers.IO) {
         synchronized(bufferLock) {

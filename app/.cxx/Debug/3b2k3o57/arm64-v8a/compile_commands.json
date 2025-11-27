@@ -1,7 +1,0 @@
-[
-{
-  "directory": "/Users/him/Repos/shadowmourne/app/.cxx/Debug/3b2k3o57/arm64-v8a",
-  "command": "/Users/him/Android/ndk/26.1.10909125/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang --target=aarch64-none-linux-android28 --sysroot=/Users/him/Android/ndk/26.1.10909125/toolchains/llvm/prebuilt/darwin-x86_64/sysroot -Dglaive_core_EXPORTS -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -fno-limit-debug-info  -fPIC -O3 -Wall -std=c99 -fno-exceptions -ffast-math -funroll-loops -fomit-frame-pointer -march=armv8-a+simd -o CMakeFiles/glaive_core.dir/src/main/cpp/glaive_core.c.o -c /Users/him/Repos/shadowmourne/app/src/main/cpp/glaive_core.c",
-  "file": "/Users/him/Repos/shadowmourne/app/src/main/cpp/glaive_core.c"
-}
-]

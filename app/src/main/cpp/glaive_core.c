@@ -12,6 +12,9 @@
 #include <stdint.h>
 #include <arm_neon.h>
 #include <android/log.h>
+#include <limits.h>
+
+int64_t calculate_dir_size_recursive(int parent_fd, const char *path);
 
 #define LOG_TAG "GLAIVE_C"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
@@ -36,6 +39,46 @@ typedef enum {
 } FileType;
 
 // Unused functions removed
+
+int64_t calculate_dir_size_recursive(int parent_fd, const char *path) {
+    int64_t total_size = 0;
+    char child_path[PATH_MAX];
+    struct stat st;
+
+    // Open the directory relative to the parent file descriptor
+    int dir_fd = openat(parent_fd, path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dir_fd == -1) {
+        return 0;
+    }
+
+    DIR *dir = fdopendir(dir_fd);
+    if (!dir) {
+        close(dir_fd);
+        return 0;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        if (fstatat(dir_fd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+            if (S_ISDIR(st.st_mode)) {
+                total_size += calculate_dir_size_recursive(dir_fd, entry->d_name);
+            } else {
+                total_size += st.st_size;
+            }
+        }
+    }
+
+    closedir(dir);
+    // fdopendir does not close the fd, so we must do it.
+    // close(dir_fd) is handled by closedir. Oh wait, the man page says fdopendir's fd is closed by closedir. Let's double check.
+    // "The file descriptor is closed automatically when the stream created by fdopendir() is closed with closedir()." - Correct.
+
+    return total_size;
+}
 
 
 // ==========================================
@@ -384,6 +427,25 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
 
     (*env)->ReleaseStringUTFChars(env, jPath, path);
     return (jint)(head - buffer);
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_mewmix_glaive_core_NativeCore_nativeCalculateDirectorySize(JNIEnv *env, jobject clazz, jstring jPath) {
+    const char *path = (*env)->GetStringUTFChars(env, jPath, NULL);
+    if (path == NULL) {
+        return 0;
+    }
+    int fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd == -1) {
+        (*env)->ReleaseStringUTFChars(env, jPath, path);
+        return 0;
+    }
+
+    int64_t size = calculate_dir_size_recursive(fd, ".");
+
+    close(fd);
+    (*env)->ReleaseStringUTFChars(env, jPath, path);
+    return size;
 }
 
 // ==========================================
