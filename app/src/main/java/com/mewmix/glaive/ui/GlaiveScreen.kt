@@ -56,6 +56,7 @@ import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -102,19 +103,6 @@ import java.io.File
 import java.util.Locale
 import kotlin.system.measureTimeMillis
 
-// --- THEME COLORS (UNIFIED GREEN) ---
-val DeepSpace = Color(0xFF0A0A0A)
-val SurfaceGray = Color(0xFF181818)
-val SoftWhite = Color(0xFFEEEEEE)
-val NeonGreen = Color(0xFF00E676) 
-val DarkGreen = Color(0xFF003318)
-val DangerRed = Color(0xFFD32F2F)
-
-// Aliases to maintain code compatibility
-val AccentPurple = NeonGreen 
-val AccentBlue = NeonGreen
-val AccentGreen = NeonGreen
-
 enum class SortMode { NAME, DATE, SIZE, TYPE }
 
 const val ROOT_PATH = "/storage/emulated/0"
@@ -123,721 +111,749 @@ const val ROOT_PATH = "/storage/emulated/0"
 fun GlaiveScreen() {
     val context = LocalContext.current
     
-    // State
-    var currentPath by remember { mutableStateOf(ROOT_PATH) }
-    var rawList by remember { mutableStateOf<List<GlaiveItem>>(emptyList()) }
-    var secondaryPath by remember { mutableStateOf(ROOT_PATH) }
-    var secondaryRawList by remember { mutableStateOf<List<GlaiveItem>>(emptyList()) }
-    var sortMode by remember { mutableStateOf(SortMode.NAME) }
-    var sortAscending by remember { mutableStateOf(true) }
-    var searchQuery by remember { mutableStateOf("") }
-    var isSearchActive by remember { mutableStateOf(false) }
-    var secondarySearchQuery by remember { mutableStateOf("") }
-    var secondaryIsSearchActive by remember { mutableStateOf(false) }
-    var selectedPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
-    
-    // New State
-    var isGridView by remember { mutableStateOf(false) }
-    var currentTab by remember { mutableStateOf(0) } // 0 = Browse, 1 = Recents
-    var secondaryCurrentTab by remember { mutableStateOf(0) }
-    var activePane by remember { mutableStateOf(0) }
-    var clipboardItems by remember { mutableStateOf<List<File>>(emptyList()) }
-    var isCutOperation by remember { mutableStateOf(false) }
-    var showCreateDialog by remember { mutableStateOf(false) }
-    var showEditor by remember { mutableStateOf(false) }
-    var editorFile by remember { mutableStateOf<File?>(null) }
-    val pathHistory = remember { mutableStateListOf<String>() }
-    var splitScopeEnabled by remember { mutableStateOf(false) }
-    var splitFraction by remember { mutableStateOf(0.5f) }
-    val minSplitFraction = 0.3f
-    val maxSplitFraction = 0.7f
-    var navigationPaneVisible by remember { mutableStateOf(false) }
-    var navigationPanePulse by remember { mutableStateOf(0) }
-    
-    // Filter State
-    var activeFilters by remember { mutableStateOf<Set<Int>>(emptySet()) }
-    
-    // Context Menu State
-    var contextMenuTarget by remember { mutableStateOf<GlaiveItem?>(null) }
-    var contextMenuPane by remember { mutableStateOf(0) }
-    var maximizedPane by remember { mutableStateOf(-1) }
-    var showMultiSelectionMenu by remember { mutableStateOf(false) }
+    // Theme State
+    var themeConfig by remember { mutableStateOf(ThemeManager.loadTheme(context)) }
+    var showThemeSettings by remember { mutableStateOf(false) }
 
-    val directorySizes = remember { mutableStateMapOf<String, Long>() }
-    
-    val scope = rememberCoroutineScope()
+    GlaiveTheme(config = themeConfig) {
+        val theme = LocalGlaiveTheme.current
 
-    fun panePath(index: Int): String = if (index == 0) currentPath else secondaryPath
-    fun setPanePath(index: Int, path: String) {
-        if (index == 0) currentPath = path else secondaryPath = path
-    }
-    fun paneSearchQuery(index: Int): String = if (index == 0) searchQuery else secondarySearchQuery
-    fun setPaneSearchQuery(index: Int, query: String) {
-        if (index == 0) searchQuery = query else secondarySearchQuery = query
-    }
-    fun paneIsSearchActive(index: Int): Boolean = if (index == 0) isSearchActive else secondaryIsSearchActive
-    fun setPaneSearchActive(index: Int, active: Boolean) {
-        if (index == 0) isSearchActive = active else secondaryIsSearchActive = active
-    }
-    fun paneCurrentTab(index: Int): Int = if (index == 0) currentTab else secondaryCurrentTab
-    fun setPaneCurrentTab(index: Int, tab: Int) {
-        if (index == 0) currentTab = tab else secondaryCurrentTab = tab
-    }
+        // State
+        var currentPath by remember { mutableStateOf(ROOT_PATH) }
+        var rawList by remember { mutableStateOf<List<GlaiveItem>>(emptyList()) }
+        var secondaryPath by remember { mutableStateOf(ROOT_PATH) }
+        var secondaryRawList by remember { mutableStateOf<List<GlaiveItem>>(emptyList()) }
+        var sortMode by remember { mutableStateOf(SortMode.NAME) }
+        var sortAscending by remember { mutableStateOf(true) }
+        var searchQuery by remember { mutableStateOf("") }
+        var isSearchActive by remember { mutableStateOf(false) }
+        var secondarySearchQuery by remember { mutableStateOf("") }
+        var secondaryIsSearchActive by remember { mutableStateOf(false) }
+        var selectedPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
 
-    fun keepNavigationPaneAlive() {
-        if (navigationPaneVisible) {
-            navigationPanePulse++
+        // New State
+        var isGridView by remember { mutableStateOf(false) }
+        var currentTab by remember { mutableStateOf(0) } // 0 = Browse, 1 = Recents
+        var secondaryCurrentTab by remember { mutableStateOf(0) }
+        var activePane by remember { mutableStateOf(0) }
+        var clipboardItems by remember { mutableStateOf<List<File>>(emptyList()) }
+        var isCutOperation by remember { mutableStateOf(false) }
+        var showCreateDialog by remember { mutableStateOf(false) }
+        var showEditor by remember { mutableStateOf(false) }
+        var editorFile by remember { mutableStateOf<File?>(null) }
+        val pathHistory = remember { mutableStateListOf<String>() }
+        var splitScopeEnabled by remember { mutableStateOf(false) }
+        var splitFraction by remember { mutableStateOf(0.5f) }
+        val minSplitFraction = 0.3f
+        val maxSplitFraction = 0.7f
+        var navigationPaneVisible by remember { mutableStateOf(false) }
+        var navigationPanePulse by remember { mutableStateOf(0) }
+
+        // Filter State
+        var activeFilters by remember { mutableStateOf<Set<Int>>(emptySet()) }
+
+        // Context Menu State
+        var contextMenuTarget by remember { mutableStateOf<GlaiveItem?>(null) }
+        var contextMenuPane by remember { mutableStateOf(0) }
+        var maximizedPane by remember { mutableStateOf(-1) }
+        var showMultiSelectionMenu by remember { mutableStateOf(false) }
+
+        val directorySizes = remember { mutableStateMapOf<String, Long>() }
+
+        val scope = rememberCoroutineScope()
+
+        fun panePath(index: Int): String = if (index == 0) currentPath else secondaryPath
+        fun setPanePath(index: Int, path: String) {
+            if (index == 0) currentPath = path else secondaryPath = path
         }
-    }
+        fun paneSearchQuery(index: Int): String = if (index == 0) searchQuery else secondarySearchQuery
+        fun setPaneSearchQuery(index: Int, query: String) {
+            if (index == 0) searchQuery = query else secondarySearchQuery = query
+        }
+        fun paneIsSearchActive(index: Int): Boolean = if (index == 0) isSearchActive else secondaryIsSearchActive
+        fun setPaneSearchActive(index: Int, active: Boolean) {
+            if (index == 0) isSearchActive = active else secondaryIsSearchActive = active
+        }
+        fun paneCurrentTab(index: Int): Int = if (index == 0) currentTab else secondaryCurrentTab
+        fun setPaneCurrentTab(index: Int, tab: Int) {
+            if (index == 0) currentTab = tab else secondaryCurrentTab = tab
+        }
 
-    fun handlePaste(paneIndex: Int) {
-    DebugLogger.log("Pasting ${clipboardItems.size} items to pane $paneIndex") {
-        scope.launch {
-            val targetPath = panePath(paneIndex)
-            if (targetPath.contains(".zip")) {
-                val zipPath = targetPath.substringBefore(".zip") + ".zip"
-                val internalPath = targetPath.substringAfter(".zip", "")
-                val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
-                
-                FileOperations.addToZip(File(zipPath), clipboardItems, cleanInternal)
-                
-                // Refresh
-                if (paneIndex == 0) {
-                    rawList = FileOperations.listZip(zipPath, cleanInternal)
-                } else {
-                    secondaryRawList = FileOperations.listZip(zipPath, cleanInternal)
-                }
-            } else {
-                val dest = File(targetPath)
-                clipboardItems.forEach { src ->
-                    if (isCutOperation) FileOperations.move(src, dest)
-                    else FileOperations.copy(src, dest)
-                }
-                if (isCutOperation) clipboardItems = emptyList()
-                // Refresh
-                val updated = NativeCore.list(targetPath)
-                if (paneIndex == 0) rawList = updated else secondaryRawList = updated
+        fun keepNavigationPaneAlive() {
+            if (navigationPaneVisible) {
+                navigationPanePulse++
             }
         }
-    }
-}
-    
-    fun getFilterMask(filters: Set<Int>): Int {
-        var mask = 0
-        for (type in filters) mask = mask or (1 shl type)
-        return mask
-    }
-    
-    fun getSortModeInt(mode: SortMode): Int {
-        return when(mode) {
-            SortMode.NAME -> 0
-            SortMode.DATE -> 1
-            SortMode.SIZE -> 2
-            SortMode.TYPE -> 3
-        }
-    }
 
-    // Navigation Helper
-    fun navigateTo(paneIndex: Int, path: String) {
-        DebugLogger.log("Navigating to $path in pane $paneIndex") {
-            if (!path.startsWith(ROOT_PATH)) return@log
-
-            val origin = panePath(paneIndex)
-            if (path != origin) {
-                pathHistory.remove(path)
-                if (origin.isNotEmpty()) {
-                    pathHistory.remove(origin)
-                    pathHistory.add(0, origin)
-                    if (pathHistory.size > 6) {
-                        pathHistory.removeAt(pathHistory.lastIndex)
-                    }
-                }
-            }
-            setPanePath(paneIndex, path)
-            setPaneSearchQuery(paneIndex, "")
-            setPaneSearchActive(paneIndex, false)
-            selectedPaths = emptySet()
-        }
-    }
-
-    fun toggleSearch(paneIndex: Int) {
-        val currentlyActive = paneIsSearchActive(paneIndex)
-        if (currentlyActive) setPaneSearchQuery(paneIndex, "")
-        setPaneSearchActive(paneIndex, !currentlyActive)
-    }
-
-    // Load Data / Search with Debounce
-    LaunchedEffect(currentPath, searchQuery, currentTab, sortMode, sortAscending, activeFilters) {
-        DebugLogger.logSuspend("Loading data for path: $currentPath") {
-            if (currentTab == 1) {
-                rawList = FavoritesManager.getFavorites(context)
-            } else {
-                if (searchQuery.isEmpty()) {
-                    rawList = NativeCore.list(
-                        currentPath, 
-                        getSortModeInt(sortMode), 
-                        sortAscending, 
-                        getFilterMask(activeFilters)
-                    )
-                } else {
-                    if (currentPath.contains(".zip")) {
-                        val zipPath = currentPath.substringBefore(".zip") + ".zip"
-                        val internalPath = currentPath.substringAfter(".zip", "")
-                        if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
-                        rawList = FileOperations.listZip(zipPath, internalPath)
-                    } else {
-                        delay(300)
-                        rawList = NativeCore.search(currentPath, searchQuery, getFilterMask(activeFilters))
-                    }
-                }
-            }
-        }
-    }
-
-    LaunchedEffect(secondaryPath, secondarySearchQuery, secondaryCurrentTab, sortMode, sortAscending, activeFilters, splitScopeEnabled) {
-        if (!splitScopeEnabled) return@LaunchedEffect
-        DebugLogger.logSuspend("Loading data for secondary path: $secondaryPath") {
-            if (secondaryCurrentTab == 1) {
-                secondaryRawList = FavoritesManager.getFavorites(context)
-            } else {
-                if (secondarySearchQuery.isEmpty()) {
-                    secondaryRawList = NativeCore.list(
-                        secondaryPath,
-                        getSortModeInt(sortMode),
-                        sortAscending,
-                        getFilterMask(activeFilters)
-                    )
-                } else {
-                    if (secondaryPath.contains(".zip")) {
-                        val zipPath = secondaryPath.substringBefore(".zip") + ".zip"
-                        val internalPath = secondaryPath.substringAfter(".zip", "")
-                        val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
-                        secondaryRawList = FileOperations.listZip(zipPath, cleanInternal)
-                    } else {
-                        delay(300)
-                        secondaryRawList = NativeCore.search(secondaryPath, secondarySearchQuery, getFilterMask(activeFilters))
-                    }
-                }
-            }
-        }
-    }
-    
-    // Stats Calculation (Background)
-    var stats by remember { mutableStateOf(GlaiveStats(0, 0, 0, 0, 0)) }
-    LaunchedEffect(rawList, secondaryRawList, selectedPaths, activePane, directorySizes) {
-        withContext(Dispatchers.Default) {
-            val activeList = if (activePane == 0) rawList else secondaryRawList
-            val totalSize = activeList.sumOf { item ->
-                if (item.type == GlaiveItem.TYPE_DIR) {
-                    directorySizes.getOrDefault(item.path, 0L)
-                } else {
-                    item.size
-                }
-            }
-            val selectedSize = activeList.filter { selectedPaths.contains(it.path) }.sumOf { item ->
-                if (item.type == GlaiveItem.TYPE_DIR) {
-                    directorySizes.getOrDefault(item.path, 0L)
-                } else {
-                    item.size
-                }
-            }
-            val dirCount = activeList.count { it.type == GlaiveItem.TYPE_DIR }
-            val fileCount = activeList.size - dirCount
-            withContext(Dispatchers.Main) {
-                stats = GlaiveStats(activeList.size, totalSize, selectedSize, dirCount, fileCount)
-            }
-        }
-    }
-
-    LaunchedEffect(rawList, secondaryRawList, activePane) {
-        val activeList = if (activePane == 0) rawList else secondaryRawList
-        activeList.forEach { item ->
-            if (item.type == GlaiveItem.TYPE_DIR && !directorySizes.containsKey(item.path)) {
+        fun handlePaste(paneIndex: Int) {
+            DebugLogger.log("Pasting ${clipboardItems.size} items to pane $paneIndex") {
                 scope.launch {
-                    val size = NativeCore.calculateDirectorySize(item.path)
-                    directorySizes[item.path] = size
-                }
-            }
-        }
-    }
+                    val targetPath = panePath(paneIndex)
+                    if (targetPath.contains(".zip")) {
+                        val zipPath = targetPath.substringBefore(".zip") + ".zip"
+                        val internalPath = targetPath.substringAfter(".zip", "")
+                        val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
 
-    LaunchedEffect(splitScopeEnabled) {
-        if (splitScopeEnabled) {
-            secondaryPath = currentPath
-        } else {
-            activePane = 0
-        }
-    }
+                        FileOperations.addToZip(File(zipPath), clipboardItems, cleanInternal)
 
-    LaunchedEffect(navigationPaneVisible, navigationPanePulse) {
-        if (navigationPaneVisible) {
-            delay(4200)
-            navigationPaneVisible = false
-        }
-    }
-
-    val activePanePath = panePath(activePane)
-    val activePaneSearch = paneIsSearchActive(activePane)
-
-    BackHandler(enabled = (activePanePath != ROOT_PATH || activePaneSearch || selectedPaths.isNotEmpty()) || (splitScopeEnabled && secondaryPath != ROOT_PATH)) {
-        if (selectedPaths.isNotEmpty()) {
-            selectedPaths = emptySet()
-        } else if (activePaneSearch) {
-            setPaneSearchActive(activePane, false)
-            setPaneSearchQuery(activePane, "")
-        } else {
-            if (splitScopeEnabled && activePane == 1 && secondaryPath != ROOT_PATH) {
-                File(secondaryPath).parent?.let { 
-                    if (it.startsWith(ROOT_PATH)) navigateTo(1, it) 
-                }
-            } else if (activePanePath != ROOT_PATH) {
-                if (activePanePath.contains(".zip") && !activePanePath.endsWith(".zip")) {
-                     // Inside zip, go up
-                     val parent = activePanePath.substringBeforeLast("/")
-                     navigateTo(activePane, parent)
-                } else {
-                    File(activePanePath).parent?.let { 
-                        if (it.startsWith(ROOT_PATH)) navigateTo(activePane, it) 
-                    }
-                }
-            }
-        }
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(DeepSpace)
-    ) {
-        val handleItemClick: (Int, GlaiveItem) -> Unit = { paneIndex, item ->
-            activePane = paneIndex
-            if (selectedPaths.isNotEmpty()) {
-                selectedPaths = if (selectedPaths.contains(item.path)) {
-                    selectedPaths - item.path
-                } else {
-                    selectedPaths + item.path
-                }
-            } else if (item.type == GlaiveItem.TYPE_DIR || File(item.path).isDirectory || item.path.endsWith(".zip")) {
-                navigateTo(paneIndex, item.path)
-            } else {
-                openFile(context, item)
-            }
-        }
-        val handleItemLongPress: (Int, GlaiveItem) -> Unit = { paneIndex, item ->
-            activePane = paneIndex
-            contextMenuPane = paneIndex
-            contextMenuTarget = item
-        }
-
-        Column(modifier = Modifier.fillMaxSize()) {
-            
-            // -- TOP HEADER (CONDENSED & COLLAPSIBLE) --
-            GlaiveHeader(
-                currentPath = activePanePath,
-                isSearchActive = activePaneSearch,
-                searchQuery = paneSearchQuery(activePane),
-                onSearchQueryChange = { setPaneSearchQuery(activePane, it) },
-                onToggleSearch = { toggleSearch(activePane) },
-                onPathJump = { navigateTo(activePane, it) },
-                currentTab = paneCurrentTab(activePane),
-                onTabChange = { setPaneCurrentTab(activePane, it) },
-                isGridView = isGridView,
-                onToggleView = { isGridView = !isGridView },
-                onAddClick = { showCreateDialog = true },
-                stats = stats,
-                splitScopeEnabled = splitScopeEnabled,
-                onSplitToggle = { splitScopeEnabled = !splitScopeEnabled },
-                onHomeClick = { navigateTo(activePane, ROOT_PATH) }
-            )
-            
-            // -- FILTER BAR --
-            if (!splitScopeEnabled && !paneIsSearchActive(activePane) && paneCurrentTab(activePane) == 0) {
-                FilterBar(
-                    activeFilters = activeFilters,
-                    onFilterToggle = { type ->
-                        activeFilters = if (activeFilters.contains(type)) {
-                            activeFilters - type
+                        // Refresh
+                        if (paneIndex == 0) {
+                            rawList = FileOperations.listZip(zipPath, cleanInternal)
                         } else {
-                            activeFilters + type
+                            secondaryRawList = FileOperations.listZip(zipPath, cleanInternal)
+                        }
+                    } else {
+                        val dest = File(targetPath)
+                        clipboardItems.forEach { src ->
+                            if (isCutOperation) FileOperations.move(src, dest)
+                            else FileOperations.copy(src, dest)
+                        }
+                        if (isCutOperation) clipboardItems = emptyList()
+                        // Refresh
+                        val updated = NativeCore.list(targetPath)
+                        if (paneIndex == 0) rawList = updated else secondaryRawList = updated
+                    }
+                }
+            }
+        }
+
+        fun getFilterMask(filters: Set<Int>): Int {
+            var mask = 0
+            for (type in filters) mask = mask or (1 shl type)
+            return mask
+        }
+
+        fun getSortModeInt(mode: SortMode): Int {
+            return when(mode) {
+                SortMode.NAME -> 0
+                SortMode.DATE -> 1
+                SortMode.SIZE -> 2
+                SortMode.TYPE -> 3
+            }
+        }
+
+        // Navigation Helper
+        fun navigateTo(paneIndex: Int, path: String) {
+            DebugLogger.log("Navigating to $path in pane $paneIndex") {
+                if (!path.startsWith(ROOT_PATH)) return@log
+
+                val origin = panePath(paneIndex)
+                if (path != origin) {
+                    pathHistory.remove(path)
+                    if (origin.isNotEmpty()) {
+                        pathHistory.remove(origin)
+                        pathHistory.add(0, origin)
+                        if (pathHistory.size > 6) {
+                            pathHistory.removeAt(pathHistory.lastIndex)
                         }
                     }
-                )
+                }
+                setPanePath(paneIndex, path)
+                setPaneSearchQuery(paneIndex, "")
+                setPaneSearchActive(paneIndex, false)
+                selectedPaths = emptySet()
+            }
+        }
+
+        fun toggleSearch(paneIndex: Int) {
+            val currentlyActive = paneIsSearchActive(paneIndex)
+            if (currentlyActive) setPaneSearchQuery(paneIndex, "")
+            setPaneSearchActive(paneIndex, !currentlyActive)
+        }
+
+        // Load Data / Search with Debounce
+        LaunchedEffect(currentPath, searchQuery, currentTab, sortMode, sortAscending, activeFilters) {
+            DebugLogger.logSuspend("Loading data for path: $currentPath") {
+                if (currentTab == 1) {
+                    rawList = FavoritesManager.getFavorites(context)
+                } else {
+                    if (searchQuery.isEmpty()) {
+                        rawList = NativeCore.list(
+                            currentPath,
+                            getSortModeInt(sortMode),
+                            sortAscending,
+                            getFilterMask(activeFilters)
+                        )
+                    } else {
+                        if (currentPath.contains(".zip")) {
+                            val zipPath = currentPath.substringBefore(".zip") + ".zip"
+                            val internalPath = currentPath.substringAfter(".zip", "")
+                            val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
+                            rawList = FileOperations.listZip(zipPath, cleanInternal)
+                        } else {
+                            delay(300)
+                            rawList = NativeCore.search(currentPath, searchQuery, getFilterMask(activeFilters))
+                        }
+                    }
+                }
+            }
+        }
+
+        LaunchedEffect(secondaryPath, secondarySearchQuery, secondaryCurrentTab, sortMode, sortAscending, activeFilters, splitScopeEnabled) {
+            if (!splitScopeEnabled) return@LaunchedEffect
+            DebugLogger.logSuspend("Loading data for secondary path: $secondaryPath") {
+                if (secondaryCurrentTab == 1) {
+                    secondaryRawList = FavoritesManager.getFavorites(context)
+                } else {
+                    if (secondarySearchQuery.isEmpty()) {
+                        secondaryRawList = NativeCore.list(
+                            secondaryPath,
+                            getSortModeInt(sortMode),
+                            sortAscending,
+                            getFilterMask(activeFilters)
+                        )
+                    } else {
+                        if (secondaryPath.contains(".zip")) {
+                            val zipPath = secondaryPath.substringBefore(".zip") + ".zip"
+                            val internalPath = secondaryPath.substringAfter(".zip", "")
+                            val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
+                            secondaryRawList = FileOperations.listZip(zipPath, cleanInternal)
+                        } else {
+                            delay(300)
+                            secondaryRawList = NativeCore.search(secondaryPath, secondarySearchQuery, getFilterMask(activeFilters))
+                        }
+                    }
+                }
+            }
+        }
+
+        // Stats Calculation (Background)
+        var stats by remember { mutableStateOf(GlaiveStats(0, 0, 0, 0, 0)) }
+        LaunchedEffect(rawList, secondaryRawList, selectedPaths, activePane, directorySizes) {
+            withContext(Dispatchers.Default) {
+                val activeList = if (activePane == 0) rawList else secondaryRawList
+                val totalSize = activeList.sumOf { item ->
+                    if (item.type == GlaiveItem.TYPE_DIR) {
+                        directorySizes.getOrDefault(item.path, 0L)
+                    } else {
+                        item.size
+                    }
+                }
+                val selectedSize = activeList.filter { selectedPaths.contains(it.path) }.sumOf { item ->
+                    if (item.type == GlaiveItem.TYPE_DIR) {
+                        directorySizes.getOrDefault(item.path, 0L)
+                    } else {
+                        item.size
+                    }
+                }
+                val dirCount = activeList.count { it.type == GlaiveItem.TYPE_DIR }
+                val fileCount = activeList.size - dirCount
+                withContext(Dispatchers.Main) {
+                    stats = GlaiveStats(activeList.size, totalSize, selectedSize, dirCount, fileCount)
+                }
+            }
+        }
+
+        LaunchedEffect(rawList, secondaryRawList, activePane) {
+            val activeList = if (activePane == 0) rawList else secondaryRawList
+            activeList.forEach { item ->
+                if (item.type == GlaiveItem.TYPE_DIR && !directorySizes.containsKey(item.path)) {
+                    scope.launch {
+                        val size = NativeCore.calculateDirectorySize(item.path)
+                        directorySizes[item.path] = size
+                    }
+                }
+            }
+        }
+
+        LaunchedEffect(splitScopeEnabled) {
+            if (splitScopeEnabled) {
+                secondaryPath = currentPath
+            } else {
+                activePane = 0
+            }
+        }
+
+        LaunchedEffect(navigationPaneVisible, navigationPanePulse) {
+            if (navigationPaneVisible) {
+                delay(4200)
+                navigationPaneVisible = false
+            }
+        }
+
+        val activePanePath = panePath(activePane)
+        val activePaneSearch = paneIsSearchActive(activePane)
+
+        BackHandler(enabled = (activePanePath != ROOT_PATH || activePaneSearch || selectedPaths.isNotEmpty()) || (splitScopeEnabled && secondaryPath != ROOT_PATH)) {
+            if (selectedPaths.isNotEmpty()) {
+                selectedPaths = emptySet()
+            } else if (activePaneSearch) {
+                setPaneSearchActive(activePane, false)
+                setPaneSearchQuery(activePane, "")
+            } else {
+                if (splitScopeEnabled && activePane == 1 && secondaryPath != ROOT_PATH) {
+                    File(secondaryPath).parent?.let {
+                        if (it.startsWith(ROOT_PATH)) navigateTo(1, it)
+                    }
+                } else if (activePanePath != ROOT_PATH) {
+                    if (activePanePath.contains(".zip") && !activePanePath.endsWith(".zip")) {
+                         // Inside zip, go up
+                         val parent = activePanePath.substringBeforeLast("/")
+                         navigateTo(activePane, parent)
+                    } else {
+                        File(activePanePath).parent?.let {
+                            if (it.startsWith(ROOT_PATH)) navigateTo(activePane, it)
+                        }
+                    }
+                }
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(theme.colors.background)
+        ) {
+            val handleItemClick: (Int, GlaiveItem) -> Unit = { paneIndex, item ->
+                activePane = paneIndex
+                if (selectedPaths.isNotEmpty()) {
+                    selectedPaths = if (selectedPaths.contains(item.path)) {
+                        selectedPaths - item.path
+                    } else {
+                        selectedPaths + item.path
+                    }
+                } else if (item.type == GlaiveItem.TYPE_DIR || File(item.path).isDirectory || item.path.endsWith(".zip")) {
+                    navigateTo(paneIndex, item.path)
+                } else {
+                    openFile(context, item)
+                }
+            }
+            val handleItemLongPress: (Int, GlaiveItem) -> Unit = { paneIndex, item ->
+                activePane = paneIndex
+                contextMenuPane = paneIndex
+                contextMenuTarget = item
             }
 
-            // -- CONTENT LIST --
-            if (splitScopeEnabled) {
-                BoxWithConstraints(
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 8.dp)
-                ) {
-                    val density = LocalDensity.current
-                    val totalWidthPx = remember(maxWidth, density) { with(density) { maxWidth.toPx() } }
-                    Row(
-                        modifier = Modifier.fillMaxSize(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        if (maximizedPane == -1 || maximizedPane == 0) {
-                            PaneBrowser(
-                                paneIndex = 0,
-                                modifier = Modifier
-                                    .weight(if (maximizedPane == 0) 1f else splitFraction)
-                                    .fillMaxHeight(),
-                                isGridView = isGridView,
-                                displayedList = rawList,
-                                selectedPaths = selectedPaths,
-                                sortMode = sortMode,
-                                onItemClick = handleItemClick,
-                                onItemLongClick = handleItemLongPress,
-                                onMaximize = { maximizedPane = if (maximizedPane == 0) -1 else 0 },
-                                onPaste = { handlePaste(0) },
-                                clipboardActive = clipboardItems.isNotEmpty(),
-                                directorySizes = directorySizes,
-                                canMaximize = splitScopeEnabled && maximizedPane == -1
-                            )
+            Column(modifier = Modifier.fillMaxSize()) {
+
+                // -- TOP HEADER (CONDENSED & COLLAPSIBLE) --
+                GlaiveHeader(
+                    currentPath = activePanePath,
+                    isSearchActive = activePaneSearch,
+                    searchQuery = paneSearchQuery(activePane),
+                    onSearchQueryChange = { setPaneSearchQuery(activePane, it) },
+                    onToggleSearch = { toggleSearch(activePane) },
+                    onPathJump = { navigateTo(activePane, it) },
+                    currentTab = paneCurrentTab(activePane),
+                    onTabChange = { setPaneCurrentTab(activePane, it) },
+                    isGridView = isGridView,
+                    onToggleView = { isGridView = !isGridView },
+                    onAddClick = { showCreateDialog = true },
+                    stats = stats,
+                    splitScopeEnabled = splitScopeEnabled,
+                    onSplitToggle = { splitScopeEnabled = !splitScopeEnabled },
+                    onHomeClick = { navigateTo(activePane, ROOT_PATH) },
+                    onThemeSettings = { showThemeSettings = true }
+                )
+
+                // -- FILTER BAR --
+                if (!splitScopeEnabled && !paneIsSearchActive(activePane) && paneCurrentTab(activePane) == 0) {
+                    FilterBar(
+                        activeFilters = activeFilters,
+                        onFilterToggle = { type ->
+                            activeFilters = if (activeFilters.contains(type)) {
+                                activeFilters - type
+                            } else {
+                                activeFilters + type
+                            }
                         }
-                        if (maximizedPane == -1) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxHeight()
-                                    .width(12.dp)
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(SurfaceGray.copy(alpha = 0.9f))
-                                    .pointerInput(totalWidthPx) {
-                                        detectHorizontalDragGestures { _, dragAmount ->
-                                            if (totalWidthPx > 0f) {
-                                                val delta = dragAmount / totalWidthPx
-                                                splitFraction = (splitFraction + delta).coerceIn(minSplitFraction, maxSplitFraction)
-                                            }
-                                        }
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
+                    )
+                }
+
+                // -- CONTENT LIST --
+                if (splitScopeEnabled) {
+                    BoxWithConstraints(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 8.dp)
+                    ) {
+                        val density = LocalDensity.current
+                        val totalWidthPx = remember(maxWidth, density) { with(density) { maxWidth.toPx() } }
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (maximizedPane == -1 || maximizedPane == 0) {
+                                PaneBrowser(
+                                    paneIndex = 0,
+                                    modifier = Modifier
+                                        .weight(if (maximizedPane == 0) 1f else splitFraction)
+                                        .fillMaxHeight(),
+                                    isGridView = isGridView,
+                                    displayedList = rawList,
+                                    selectedPaths = selectedPaths,
+                                    sortMode = sortMode,
+                                    onItemClick = handleItemClick,
+                                    onItemLongClick = handleItemLongPress,
+                                    onMaximize = { maximizedPane = if (maximizedPane == 0) -1 else 0 },
+                                    onPaste = { handlePaste(0) },
+                                    clipboardActive = clipboardItems.isNotEmpty(),
+                                    directorySizes = directorySizes,
+                                    canMaximize = splitScopeEnabled && maximizedPane == -1
+                                )
+                            }
+                            if (maximizedPane == -1) {
                                 Box(
                                     modifier = Modifier
-                                        .width(2.dp)
-                                        .fillMaxHeight(0.6f)
-                                        .clip(RoundedCornerShape(1.dp))
-                                        .background(AccentBlue.copy(alpha = 0.7f))
+                                        .fillMaxHeight()
+                                        .width(12.dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(theme.colors.surface.copy(alpha = 0.9f))
+                                        .pointerInput(totalWidthPx) {
+                                            detectHorizontalDragGestures { _, dragAmount ->
+                                                if (totalWidthPx > 0f) {
+                                                    val delta = dragAmount / totalWidthPx
+                                                    splitFraction = (splitFraction + delta).coerceIn(minSplitFraction, maxSplitFraction)
+                                                }
+                                            }
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(2.dp)
+                                            .fillMaxHeight(0.6f)
+                                            .clip(RoundedCornerShape(1.dp))
+                                            .background(theme.colors.accent.copy(alpha = 0.7f))
+                                    )
+                                }
+                            }
+                            if (maximizedPane == -1 || maximizedPane == 1) {
+                                PaneBrowser(
+                                    paneIndex = 1,
+                                    modifier = Modifier
+                                        .weight(if (maximizedPane == 1) 1f else 1f - splitFraction)
+                                        .fillMaxHeight(),
+                                    isGridView = isGridView,
+                                    displayedList = secondaryRawList,
+                                    selectedPaths = selectedPaths,
+                                    sortMode = sortMode,
+                                    onItemClick = handleItemClick,
+                                    onItemLongClick = handleItemLongPress,
+                                    onMaximize = { maximizedPane = if (maximizedPane == 1) -1 else 1 },
+                                    onPaste = { handlePaste(1) },
+                                    clipboardActive = clipboardItems.isNotEmpty(),
+                                    directorySizes = directorySizes,
+                                    canMaximize = splitScopeEnabled && maximizedPane == -1
                                 )
                             }
                         }
-                        if (maximizedPane == -1 || maximizedPane == 1) {
-                            PaneBrowser(
-                                paneIndex = 1,
-                                modifier = Modifier
-                                    .weight(if (maximizedPane == 1) 1f else 1f - splitFraction)
-                                    .fillMaxHeight(),
-                                isGridView = isGridView,
-                                displayedList = secondaryRawList,
-                                selectedPaths = selectedPaths,
-                                sortMode = sortMode,
-                                onItemClick = handleItemClick,
-                                onItemLongClick = handleItemLongPress,
-                                onMaximize = { maximizedPane = if (maximizedPane == 1) -1 else 1 },
-                                onPaste = { handlePaste(1) },
-                                clipboardActive = clipboardItems.isNotEmpty(),
-                                directorySizes = directorySizes,
-                                canMaximize = splitScopeEnabled && maximizedPane == -1
-                            )
-                        }
                     }
+
+                } else {
+
+                    PaneBrowser(
+                        paneIndex = activePane,
+                        modifier = Modifier.weight(1f),
+                        isGridView = isGridView,
+                        displayedList = if (activePane == 0) rawList else secondaryRawList,
+                        selectedPaths = selectedPaths,
+                        sortMode = sortMode,
+                        onItemClick = handleItemClick,
+                        onItemLongClick = handleItemLongPress,
+                        onMaximize = {},
+                        onPaste = { handlePaste(activePane) },
+                        clipboardActive = clipboardItems.isNotEmpty(),
+                        directorySizes = directorySizes,
+                        canMaximize = false
+                    )
                 }
+            }
 
-            } else {
-
-                PaneBrowser(
-                    paneIndex = activePane,
-                    modifier = Modifier.weight(1f),
-                    isGridView = isGridView,
-                    displayedList = if (activePane == 0) rawList else secondaryRawList,
-                    selectedPaths = selectedPaths,
-                    sortMode = sortMode,
-                    onItemClick = handleItemClick,
-                    onItemLongClick = handleItemLongPress,
-                    onMaximize = {},
-                    onPaste = { handlePaste(activePane) },
+            // -- STATS & DOCK --
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                ControlDock(
+                    currentSort = sortMode,
+                    ascending = sortAscending,
+                    onSortChange = { mode ->
+                        if (sortMode == mode) sortAscending = !sortAscending
+                        else {
+                            sortMode = mode
+                            sortAscending = true
+                        }
+                    },
+                    selectionActive = selectedPaths.isNotEmpty(),
+                    onShareSelection = {
+                        val lastPath = selectedPaths.lastOrNull()
+                        if (lastPath != null) {
+                            val item = (rawList + secondaryRawList).find { it.path == lastPath }
+                            if (item != null) sharePath(context, item)
+                        }
+                    },
+                    onClearSelection = { selectedPaths = emptySet() },
+                    onMoreSelection = { showMultiSelectionMenu = true },
                     clipboardActive = clipboardItems.isNotEmpty(),
-                    directorySizes = directorySizes,
-                    canMaximize = false
+                    onPaste = { handlePaste(activePane) }
                 )
             }
-        }
 
-        // -- STATS & DOCK --
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            ControlDock(
-                currentSort = sortMode,
-                ascending = sortAscending,
-                onSortChange = { mode ->
-                    if (sortMode == mode) sortAscending = !sortAscending
-                    else {
-                        sortMode = mode
-                        sortAscending = true
+            ReverseGestureHotZone(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .fillMaxHeight(),
+                hasTrail = (pathHistory.isNotEmpty() || (File(activePanePath).parent?.startsWith(ROOT_PATH) == true && activePanePath != ROOT_PATH)),
+                onNavigateUp = {
+                    val parent = File(activePanePath).parent
+                    if (parent != null && parent.startsWith(ROOT_PATH) && activePanePath != ROOT_PATH) {
+                        navigateTo(activePane, parent)
                     }
-                },
-                selectionActive = selectedPaths.isNotEmpty(),
-                onShareSelection = {
-                    val lastPath = selectedPaths.lastOrNull()
-                    if (lastPath != null) {
-                        val item = (rawList + secondaryRawList).find { it.path == lastPath }
-                        if (item != null) sharePath(context, item)
-                    }
-                },
-                onClearSelection = { selectedPaths = emptySet() },
-                onMoreSelection = { showMultiSelectionMenu = true },
-                clipboardActive = clipboardItems.isNotEmpty(),
-                onPaste = { handlePaste(activePane) }
-            )
-        }
-
-        ReverseGestureHotZone(
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .fillMaxHeight(),
-            hasTrail = (pathHistory.isNotEmpty() || (File(activePanePath).parent?.startsWith(ROOT_PATH) == true && activePanePath != ROOT_PATH)),
-            onNavigateUp = {
-                val parent = File(activePanePath).parent
-                if (parent != null && parent.startsWith(ROOT_PATH) && activePanePath != ROOT_PATH) {
-                    navigateTo(activePane, parent)
                 }
-            }
-        )
-
-        AnimatedVisibility(
-            visible = navigationPaneVisible,
-            enter = fadeIn() + slideInVertically(initialOffsetY = { it }),
-            exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 2 }),
-            modifier = Modifier.align(Alignment.Center)
-        ) {
-            NavigationPaneOverlay(
-                activePane = activePane,
-                splitScopeEnabled = splitScopeEnabled,
-                currentPath = currentPath,
-                secondaryPath = secondaryPath,
-                pathHistory = pathHistory,
-                onPaneFocus = { paneIndex ->
-                    activePane = paneIndex
-                    keepNavigationPaneAlive()
-                },
-                onPathSelected = { paneIndex, path ->
-                    activePane = paneIndex
-                    navigateTo(paneIndex, path)
-                    navigationPaneVisible = false
-                },
-                onDismiss = { navigationPaneVisible = false },
-                onInteract = { keepNavigationPaneAlive() }
             )
-        }
-        
-        // -- CONTEXT MENU --
-        if (contextMenuTarget != null) {
-            ContextMenuSheet(
-                item = contextMenuTarget!!,
-                onDismiss = { contextMenuTarget = null },
-                onCopy = { 
-                    clipboardItems = listOf(File(contextMenuTarget!!.path))
-                    isCutOperation = false
-                    contextMenuTarget = null
-                },
-                onCut = {
-                    clipboardItems = listOf(File(contextMenuTarget!!.path))
-                    isCutOperation = true
-                    contextMenuTarget = null
-                },
-                onDelete = {
-                    scope.launch {
-                        val path = contextMenuTarget!!.path
-                        if (path.contains(".zip")) {
-                            val zipPath = path.substringBefore(".zip") + ".zip"
-                            val internalPath = path.substringAfter(".zip", "")
-                            val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
-                            
-                            FileOperations.removeFromZip(File(zipPath), listOf(cleanInternal))
-                            
-                            // Refresh
-                            val parentInternal = cleanInternal.substringBeforeLast("/", "")
-                            if (contextMenuPane == 0) {
-                                rawList = FileOperations.listZip(zipPath, parentInternal)
+
+            AnimatedVisibility(
+                visible = navigationPaneVisible,
+                enter = fadeIn() + slideInVertically(initialOffsetY = { it }),
+                exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 2 }),
+                modifier = Modifier.align(Alignment.Center)
+            ) {
+                NavigationPaneOverlay(
+                    activePane = activePane,
+                    splitScopeEnabled = splitScopeEnabled,
+                    currentPath = currentPath,
+                    secondaryPath = secondaryPath,
+                    pathHistory = pathHistory,
+                    onPaneFocus = { paneIndex ->
+                        activePane = paneIndex
+                        keepNavigationPaneAlive()
+                    },
+                    onPathSelected = { paneIndex, path ->
+                        activePane = paneIndex
+                        navigateTo(paneIndex, path)
+                        navigationPaneVisible = false
+                    },
+                    onDismiss = { navigationPaneVisible = false },
+                    onInteract = { keepNavigationPaneAlive() }
+                )
+            }
+
+            // -- CONTEXT MENU --
+            if (contextMenuTarget != null) {
+                ContextMenuSheet(
+                    item = contextMenuTarget!!,
+                    onDismiss = { contextMenuTarget = null },
+                    onCopy = {
+                        clipboardItems = listOf(File(contextMenuTarget!!.path))
+                        isCutOperation = false
+                        contextMenuTarget = null
+                    },
+                    onCut = {
+                        clipboardItems = listOf(File(contextMenuTarget!!.path))
+                        isCutOperation = true
+                        contextMenuTarget = null
+                    },
+                    onDelete = {
+                        scope.launch {
+                            val path = contextMenuTarget!!.path
+                            if (path.contains(".zip")) {
+                                val zipPath = path.substringBefore(".zip") + ".zip"
+                                val internalPath = path.substringAfter(".zip", "")
+                                val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
+
+                                FileOperations.removeFromZip(File(zipPath), listOf(cleanInternal))
+
+                                // Refresh
+                                val parentInternal = cleanInternal.substringBeforeLast("/", "")
+                                if (contextMenuPane == 0) {
+                                    rawList = FileOperations.listZip(zipPath, parentInternal)
+                                } else {
+                                    secondaryRawList = FileOperations.listZip(zipPath, parentInternal)
+                                }
                             } else {
-                                secondaryRawList = FileOperations.listZip(zipPath, parentInternal)
+                                FileOperations.delete(File(path))
+                                if (contextMenuPane == 0) {
+                                    rawList = NativeCore.list(currentPath)
+                                } else {
+                                    secondaryRawList = NativeCore.list(secondaryPath)
+                                }
                             }
-                        } else {
-                            FileOperations.delete(File(path))
+                            contextMenuTarget = null
+                        }
+                    },
+                    onEdit = {
+                        editorFile = File(contextMenuTarget!!.path)
+                        showEditor = true
+                        contextMenuTarget = null
+                    },
+                    onShare = {
+                        sharePath(context, contextMenuTarget!!)
+                        contextMenuTarget = null
+                    },
+                    onSelect = {
+                        selectedPaths = selectedPaths + contextMenuTarget!!.path
+                        contextMenuTarget = null
+                    },
+                    onZip = {
+                        scope.launch {
+                            val targetFile = File(contextMenuTarget!!.path)
+                            val zipFile = File(targetFile.parent, "${targetFile.name}.zip")
+                            if (targetFile.canonicalPath == zipFile.canonicalPath) {
+                                Toast.makeText(context, "Cannot zip a file into itself", Toast.LENGTH_SHORT).show()
+                                return@launch
+                            }
+                            FileOperations.zip(listOf(targetFile), zipFile)
                             if (contextMenuPane == 0) {
                                 rawList = NativeCore.list(currentPath)
                             } else {
                                 secondaryRawList = NativeCore.list(secondaryPath)
                             }
+                            contextMenuTarget = null
                         }
-                        contextMenuTarget = null
-                    }
-                },
-                onEdit = {
-                    editorFile = File(contextMenuTarget!!.path)
-                    showEditor = true
-                    contextMenuTarget = null
-                },
-                onShare = {
-                    sharePath(context, contextMenuTarget!!)
-                    contextMenuTarget = null
-                },
-                onSelect = {
-                    selectedPaths = selectedPaths + contextMenuTarget!!.path
-                    contextMenuTarget = null
-                },
-                onZip = {
-                    scope.launch {
-                        val targetFile = File(contextMenuTarget!!.path)
-                        val zipFile = File(targetFile.parent, "${targetFile.name}.zip")
-                        if (targetFile.canonicalPath == zipFile.canonicalPath) {
-                            Toast.makeText(context, "Cannot zip a file into itself", Toast.LENGTH_SHORT).show()
-                            return@launch
-                        }
-                        FileOperations.zip(listOf(targetFile), zipFile)
-                        if (contextMenuPane == 0) {
-                            rawList = NativeCore.list(currentPath)
-                        } else {
-                            secondaryRawList = NativeCore.list(secondaryPath)
-                        }
-                        contextMenuTarget = null
-                    }
-                },
-                isFavorite = FavoritesManager.isFavorite(context, contextMenuTarget!!.path),
-                onFavorite = { shouldAdd ->
-                    if (shouldAdd) FavoritesManager.addFavorite(context, contextMenuTarget!!.path)
-                    else FavoritesManager.removeFavorite(context, contextMenuTarget!!.path)
-                    
-                    // Refresh if in Favorites tab
-                    if (paneCurrentTab(activePane) == 1) {
-                         if (activePane == 0) rawList = FavoritesManager.getFavorites(context)
-                         else secondaryRawList = FavoritesManager.getFavorites(context)
-                    }
-                    contextMenuTarget = null
-                },
-                onUnzip = {
-                    scope.launch {
-                        val targetFile = File(contextMenuTarget!!.path)
-                        val destDir = targetFile.parentFile ?: targetFile
-                        FileOperations.unzip(targetFile, destDir)
-                        val updated = NativeCore.list(panePath(activePane))
-                        if (activePane == 0) rawList = updated else secondaryRawList = updated
-                        contextMenuTarget = null
-                    }
-                }
-            )
-        }
-        
-        // -- MULTI SELECTION MENU --
-        if (showMultiSelectionMenu) {
-            MultiSelectionMenuSheet(
-                count = selectedPaths.size,
-                onDismiss = { showMultiSelectionMenu = false },
-                onCopy = {
-                    clipboardItems = selectedPaths.map { File(it) }
-                    isCutOperation = false
-                    selectedPaths = emptySet()
-                    showMultiSelectionMenu = false
-                },
-                onCut = {
-                    clipboardItems = selectedPaths.map { File(it) }
-                    isCutOperation = true
-                    selectedPaths = emptySet()
-                    showMultiSelectionMenu = false
-                },
-                onDelete = {
-                    scope.launch {
-                        val firstPath = selectedPaths.firstOrNull()
-                        if (firstPath != null && firstPath.contains(".zip")) {
-                             val zipPath = firstPath.substringBefore(".zip") + ".zip"
-                             val internalPaths = selectedPaths.map { 
-                                 val ip = it.substringAfter(".zip", "")
-                                 if (ip.startsWith("/")) ip.substring(1) else ip
-                             }
-                             
-                             FileOperations.removeFromZip(File(zipPath), internalPaths)
-                             
-                             // Refresh
-                             val firstInternal = internalPaths.first()
-                             val parentInternal = firstInternal.substringBeforeLast("/", "")
-                             if (activePane == 0) {
-                                 rawList = FileOperations.listZip(zipPath, parentInternal)
-                             } else {
-                                 secondaryRawList = FileOperations.listZip(zipPath, parentInternal)
-                             }
-                        } else {
-                            selectedPaths.forEach { FileOperations.delete(File(it)) }
-                            val updated = NativeCore.list(panePath(activePane))
-                            if (activePane == 0) rawList = updated else secondaryRawList = updated
-                        }
-                        selectedPaths = emptySet()
-                        showMultiSelectionMenu = false
-                    }
-                },
-                onZip = {
-                    scope.launch {
-                        val files = selectedPaths.map { File(it) }
-                        if (files.isNotEmpty()) {
-                            val parent = files.first().parentFile
-                            val zipName = if (files.size == 1) "${files.first().name}.zip" else "archive_${System.currentTimeMillis()}.zip"
-                            val zipFile = File(parent, zipName)
-                            FileOperations.zip(files, zipFile)
-                            val updated = NativeCore.list(panePath(activePane))
-                            if (activePane == 0) rawList = updated else secondaryRawList = updated
-                        }
-                        selectedPaths = emptySet()
-                        showMultiSelectionMenu = false
-                    }
-                },
-                onCopyPath = {
-                    val text = selectedPaths.joinToString("\n")
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                    val clip = android.content.ClipData.newPlainText("Paths", text)
-                    clipboard.setPrimaryClip(clip)
-                    Toast.makeText(context, "Paths copied to clipboard", Toast.LENGTH_SHORT).show()
-                    selectedPaths = emptySet()
-                    showMultiSelectionMenu = false
-                }
-            )
-        }
-        
-        // -- CREATE DIALOG --
-        if (showCreateDialog) {
-            CreateDialog(
-                onDismiss = { showCreateDialog = false },
-                onCreate = { name, isDir ->
-                    scope.launch {
-                        val targetPath = panePath(activePane)
-                        val parent = File(targetPath)
-                        if (isDir) FileOperations.createDir(parent, name)
-                        else FileOperations.createFile(parent, name)
-                        val updated = NativeCore.list(targetPath)
-                        if (activePane == 0) rawList = updated else secondaryRawList = updated
-                        showCreateDialog = false
-                    }
-                }
-            )
-        }
+                    },
+                    isFavorite = FavoritesManager.isFavorite(context, contextMenuTarget!!.path),
+                    onFavorite = { shouldAdd ->
+                        if (shouldAdd) FavoritesManager.addFavorite(context, contextMenuTarget!!.path)
+                        else FavoritesManager.removeFavorite(context, contextMenuTarget!!.path)
 
-        // -- EDITOR --
-        if (showEditor && editorFile != null) {
-            TextEditor(
-                file = editorFile!!,
-                onDismiss = { showEditor = false; editorFile = null },
-                onSave = { content ->
-                    scope.launch {
-                        editorFile!!.writeText(content)
-                        showEditor = false
-                        editorFile = null
+                        // Refresh if in Favorites tab
+                        if (paneCurrentTab(activePane) == 1) {
+                             if (activePane == 0) rawList = FavoritesManager.getFavorites(context)
+                             else secondaryRawList = FavoritesManager.getFavorites(context)
+                        }
+                        contextMenuTarget = null
+                    },
+                    onUnzip = {
+                        scope.launch {
+                            val targetFile = File(contextMenuTarget!!.path)
+                            val destDir = targetFile.parentFile ?: targetFile
+                            FileOperations.unzip(targetFile, destDir)
+                            val updated = NativeCore.list(panePath(activePane))
+                            if (activePane == 0) rawList = updated else secondaryRawList = updated
+                            contextMenuTarget = null
+                        }
                     }
-                }
-            )
+                )
+            }
+
+            // -- MULTI SELECTION MENU --
+            if (showMultiSelectionMenu) {
+                MultiSelectionMenuSheet(
+                    count = selectedPaths.size,
+                    onDismiss = { showMultiSelectionMenu = false },
+                    onCopy = {
+                        clipboardItems = selectedPaths.map { File(it) }
+                        isCutOperation = false
+                        selectedPaths = emptySet()
+                        showMultiSelectionMenu = false
+                    },
+                    onCut = {
+                        clipboardItems = selectedPaths.map { File(it) }
+                        isCutOperation = true
+                        selectedPaths = emptySet()
+                        showMultiSelectionMenu = false
+                    },
+                    onDelete = {
+                        scope.launch {
+                            val firstPath = selectedPaths.firstOrNull()
+                            if (firstPath != null && firstPath.contains(".zip")) {
+                                 val zipPath = firstPath.substringBefore(".zip") + ".zip"
+                                 val internalPaths = selectedPaths.map {
+                                     val ip = it.substringAfter(".zip", "")
+                                     if (ip.startsWith("/")) ip.substring(1) else ip
+                                 }
+
+                                 FileOperations.removeFromZip(File(zipPath), internalPaths)
+
+                                 // Refresh
+                                 val firstInternal = internalPaths.first()
+                                 val parentInternal = firstInternal.substringBeforeLast("/", "")
+                                 if (activePane == 0) {
+                                     rawList = FileOperations.listZip(zipPath, parentInternal)
+                                 } else {
+                                     secondaryRawList = FileOperations.listZip(zipPath, parentInternal)
+                                 }
+                            } else {
+                                selectedPaths.forEach { FileOperations.delete(File(it)) }
+                                val updated = NativeCore.list(panePath(activePane))
+                                if (activePane == 0) rawList = updated else secondaryRawList = updated
+                            }
+                            selectedPaths = emptySet()
+                            showMultiSelectionMenu = false
+                        }
+                    },
+                    onZip = {
+                        scope.launch {
+                            val files = selectedPaths.map { File(it) }
+                            if (files.isNotEmpty()) {
+                                val parent = files.first().parentFile
+                                val zipName = if (files.size == 1) "${files.first().name}.zip" else "archive_${System.currentTimeMillis()}.zip"
+                                val zipFile = File(parent, zipName)
+                                FileOperations.zip(files, zipFile)
+                                val updated = NativeCore.list(panePath(activePane))
+                                if (activePane == 0) rawList = updated else secondaryRawList = updated
+                            }
+                            selectedPaths = emptySet()
+                            showMultiSelectionMenu = false
+                        }
+                    },
+                    onCopyPath = {
+                        val text = selectedPaths.joinToString("\n")
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        val clip = android.content.ClipData.newPlainText("Paths", text)
+                        clipboard.setPrimaryClip(clip)
+                        Toast.makeText(context, "Paths copied to clipboard", Toast.LENGTH_SHORT).show()
+                        selectedPaths = emptySet()
+                        showMultiSelectionMenu = false
+                    }
+                )
+            }
+
+            // -- CREATE DIALOG --
+            if (showCreateDialog) {
+                CreateDialog(
+                    onDismiss = { showCreateDialog = false },
+                    onCreate = { name, isDir ->
+                        scope.launch {
+                            val targetPath = panePath(activePane)
+                            val parent = File(targetPath)
+                            if (isDir) FileOperations.createDir(parent, name)
+                            else FileOperations.createFile(parent, name)
+                            val updated = NativeCore.list(targetPath)
+                            if (activePane == 0) rawList = updated else secondaryRawList = updated
+                            showCreateDialog = false
+                        }
+                    }
+                )
+            }
+
+            // -- EDITOR --
+            if (showEditor && editorFile != null) {
+                TextEditor(
+                    file = editorFile!!,
+                    onDismiss = { showEditor = false; editorFile = null },
+                    onSave = { content ->
+                        scope.launch {
+                            editorFile!!.writeText(content)
+                            showEditor = false
+                            editorFile = null
+                        }
+                    }
+                )
+            }
+
+            // -- THEME SETTINGS --
+            if (showThemeSettings) {
+                ThemeSettingsDialog(
+                    currentTheme = themeConfig,
+                    onDismiss = { showThemeSettings = false },
+                    onApply = { newConfig ->
+                        themeConfig = newConfig
+                        ThemeManager.saveTheme(context, newConfig)
+                        showThemeSettings = false
+                    },
+                    onReset = {
+                        val defaults = ThemeConfig(ThemeDefaults.Colors, ThemeDefaults.Shapes, ThemeDefaults.Typography)
+                        themeConfig = defaults
+                        ThemeManager.saveTheme(context, defaults)
+                        showThemeSettings = false
+                    }
+                )
+            }
         }
     }
 }
@@ -869,10 +885,12 @@ fun GlaiveHeader(
     stats: GlaiveStats,
     splitScopeEnabled: Boolean,
     onSplitToggle: () -> Unit,
-    onHomeClick: () -> Unit
+    onHomeClick: () -> Unit,
+    onThemeSettings: () -> Unit
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusRequester = remember { FocusRequester() }
+    val theme = LocalGlaiveTheme.current
     
     // State to toggle the "Press and Reveal" tool buttons
     var toolsExpanded by remember { mutableStateOf(false) }
@@ -894,7 +912,7 @@ fun GlaiveHeader(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(DeepSpace)
+            .background(theme.colors.background)
             .padding(top = 16.dp, bottom = 4.dp)
     ) {
         // --- TOP ROW: Tabs (Left) & Minimal Stats (Right) ---
@@ -909,7 +927,7 @@ fun GlaiveHeader(
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
-                    .background(SurfaceGray)
+                    .background(theme.colors.surface)
                     .padding(2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -926,7 +944,7 @@ fun GlaiveHeader(
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
                     text = formatSize(stats.totalSize),
-                    style = TextStyle(color = NeonGreen, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                    style = TextStyle(color = theme.colors.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                 )
             }
         }
@@ -959,7 +977,7 @@ fun GlaiveHeader(
                             BasicTextField(
                                 value = searchQuery,
                                 onValueChange = onSearchQueryChange,
-                                textStyle = TextStyle(color = SoftWhite, fontSize = 16.sp),
+                                textStyle = TextStyle(color = theme.colors.text, fontSize = 16.sp),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .focusRequester(focusRequester),
@@ -973,15 +991,17 @@ fun GlaiveHeader(
                             )
                         } else {
                             // Action Icons Row
-                            Row(
+                            LazyRow(
                                 horizontalArrangement = Arrangement.spacedBy(16.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                MinimalIcon(Icons.Default.Add, onAddClick)
-                                MinimalIcon(Icons.Default.Home, onHomeClick)
-                                MinimalIcon(if (isGridView) Icons.Default.ViewList else Icons.Default.GridView, onToggleView)
-                                MinimalIcon(Icons.Default.CallSplit, onSplitToggle, if (splitScopeEnabled) NeonGreen else Color.Gray)
-                                MinimalIcon(Icons.Default.Search, onToggleSearch)
+                                item { MinimalIcon(Icons.Default.Add, onAddClick) }
+                                item { MinimalIcon(Icons.Default.Home, onHomeClick) }
+                                item { MinimalIcon(if (isGridView) Icons.Default.ViewList else Icons.Default.GridView, onToggleView) }
+                                item { MinimalIcon(Icons.Default.CallSplit, onSplitToggle, if (splitScopeEnabled) theme.colors.accent else Color.Gray) }
+                                item { MinimalIcon(Icons.Default.Search, onToggleSearch) }
+                                item { MinimalIcon(Icons.Default.Settings, onThemeSettings) }
                             }
                         }
                     } else {
@@ -1006,13 +1026,13 @@ fun GlaiveHeader(
                 modifier = Modifier
                     .size(42.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(SurfaceGray)
+                    .background(theme.colors.surface)
             ) {
                 val icon = if (toolsExpanded || isSearchActive) Icons.Default.Close else Icons.Default.Menu
                 Icon(
                     imageVector = icon,
                     contentDescription = "Menu",
-                    tint = if(toolsExpanded) NeonGreen else SoftWhite
+                    tint = if(toolsExpanded) theme.colors.accent else theme.colors.text
                 )
             }
         }
@@ -1021,17 +1041,18 @@ fun GlaiveHeader(
 
 @Composable
 fun TabItem(text: String, selected: Boolean, onClick: () -> Unit) {
+    val theme = LocalGlaiveTheme.current
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(6.dp))
-            .background(if (selected) DeepSpace else Color.Transparent)
+            .background(if (selected) theme.colors.background else Color.Transparent)
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 6.dp)
     ) {
         Text(
             text = text,
             style = TextStyle(
-                color = if (selected) NeonGreen else Color.Gray,
+                color = if (selected) theme.colors.accent else Color.Gray,
                 fontWeight = FontWeight.Bold,
                 fontSize = 11.sp
             )
@@ -1043,22 +1064,25 @@ fun TabItem(text: String, selected: Boolean, onClick: () -> Unit) {
 fun MinimalIcon(
     icon: ImageVector,
     onClick: () -> Unit,
-    tint: Color = SoftWhite
+    tint: Color? = null
 ) {
+    val theme = LocalGlaiveTheme.current
+    val resolvedTint = tint ?: theme.colors.text
     Box(
         modifier = Modifier
             .size(40.dp)
             .clip(CircleShape)
             .clickable(onClick = onClick)
-            .background(SurfaceGray.copy(alpha = 0.5f)),
+            .background(theme.colors.surface.copy(alpha = 0.5f)),
         contentAlignment = Alignment.Center
     ) {
-        Icon(imageVector = icon, contentDescription = null, tint = tint)
+        Icon(imageVector = icon, contentDescription = null, tint = resolvedTint)
     }
 }
 
 @Composable
 fun BreadcrumbStrip(currentPath: String, onPathJump: (String) -> Unit) {
+    val theme = LocalGlaiveTheme.current
     val segments = remember(currentPath) {
         val list = mutableListOf<Pair<String, String>>()
         var acc = ""
@@ -1083,7 +1107,7 @@ fun BreadcrumbStrip(currentPath: String, onPathJump: (String) -> Unit) {
                 Text(
                     text = name.uppercase(),
                     style = TextStyle(
-                        color = if (path == currentPath) NeonGreen else Color.Gray,
+                        color = if (path == currentPath) theme.colors.accent else Color.Gray,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 13.sp
                     ),
@@ -1095,7 +1119,7 @@ fun BreadcrumbStrip(currentPath: String, onPathJump: (String) -> Unit) {
                     Icon(
                         imageVector = Icons.Default.KeyboardArrowRight,
                         contentDescription = null,
-                        tint = DarkGreen,
+                        tint = theme.colors.accent.copy(alpha = 0.5f),
                         modifier = Modifier.size(12.dp)
                     )
                 }
@@ -1120,6 +1144,7 @@ fun PaneBrowser(
     directorySizes: Map<String, Long>,
     canMaximize: Boolean = false
 ) {
+    val theme = LocalGlaiveTheme.current
     var showMaximizeButton by remember { mutableStateOf(true) }
     
     LaunchedEffect(showMaximizeButton) {
@@ -1192,9 +1217,9 @@ fun PaneBrowser(
                 modifier = Modifier
                     .padding(8.dp)
                     .clip(CircleShape)
-                    .background(SurfaceGray.copy(alpha = 0.8f))
+                    .background(theme.colors.surface.copy(alpha = 0.8f))
             ) {
-                Icon(imageVector = Icons.Default.AspectRatio, contentDescription = "Maximize", tint = NeonGreen)
+                Icon(imageVector = Icons.Default.AspectRatio, contentDescription = "Maximize", tint = theme.colors.accent)
             }
         }
     }
@@ -1211,17 +1236,18 @@ fun FileCard(
     directorySize: Long?
 ) {
     val haptic = LocalHapticFeedback.current
+    val theme = LocalGlaiveTheme.current
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(64.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (isSelected) NeonGreen.copy(alpha = 0.15f) else SurfaceGray)
+            .clip(RoundedCornerShape(theme.shapes.cornerRadius))
+            .background(if (isSelected) theme.colors.accent.copy(alpha = 0.15f) else theme.colors.surface)
             .border(
-                width = if (isSelected) 1.dp else 0.dp,
-                color = if (isSelected) NeonGreen else Color.Transparent,
-                shape = RoundedCornerShape(12.dp)
+                width = if (isSelected) theme.shapes.borderWidth else 0.dp,
+                color = if (isSelected) theme.colors.accent else Color.Transparent,
+                shape = RoundedCornerShape(theme.shapes.cornerRadius)
             )
             .combinedClickable(
                 onClick = { 
@@ -1241,7 +1267,7 @@ fun FileCard(
             contentAlignment = Alignment.Center
         ) {
             if (isSelected) {
-                Icon(imageVector = Icons.Default.Check, contentDescription = null, tint = NeonGreen)
+                Icon(imageVector = Icons.Default.Check, contentDescription = null, tint = theme.colors.accent)
             } else {
                 Text(
                     text = getTypeIcon(item.type),
@@ -1256,7 +1282,7 @@ fun FileCard(
             Text(
                 text = item.name,
                 style = TextStyle(
-                    color = if (isSelected) NeonGreen else SoftWhite,
+                    color = if (isSelected) theme.colors.accent else theme.colors.text,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Medium
                 ),
@@ -1296,6 +1322,7 @@ fun NavigationPaneOverlay(
     onDismiss: () -> Unit,
     onInteract: () -> Unit
 ) {
+    val theme = LocalGlaiveTheme.current
     val quickTargets = remember {
         listOf(
             "/" to "/storage/emulated/0",
@@ -1321,16 +1348,16 @@ fun NavigationPaneOverlay(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "Navigation",
-                    style = TextStyle(color = SoftWhite, fontWeight = FontWeight.Bold, fontSize = 20.sp),
+                    style = TextStyle(color = theme.colors.text, fontWeight = FontWeight.Bold, fontSize = 20.sp),
                     modifier = Modifier.weight(1f)
                 )
                 IconButton(
                     onClick = onDismiss,
                     modifier = Modifier
                         .clip(CircleShape)
-                        .background(SurfaceGray)
+                        .background(theme.colors.surface)
                 ) {
-                    Icon(imageVector = Icons.Default.Close, contentDescription = "Close", tint = SoftWhite)
+                    Icon(imageVector = Icons.Default.Close, contentDescription = "Close", tint = theme.colors.text)
                 }
             }
 
@@ -1343,7 +1370,7 @@ fun NavigationPaneOverlay(
                         modifier = Modifier.weight(1f),
                         title = "PANE A",
                         path = currentPath,
-                        accent = NeonGreen,
+                        accent = theme.colors.accent,
                         onClick = {
                             onInteract()
                             onPaneFocus(0)
@@ -1354,7 +1381,7 @@ fun NavigationPaneOverlay(
                         modifier = Modifier.weight(1f),
                         title = "PANE B",
                         path = secondaryPath,
-                        accent = NeonGreen,
+                        accent = theme.colors.accent,
                         onClick = {
                             onInteract()
                             onPaneFocus(1)
@@ -1367,7 +1394,7 @@ fun NavigationPaneOverlay(
                     modifier = Modifier.fillMaxWidth(),
                     title = "ACTIVE",
                     path = currentPath,
-                    accent = NeonGreen,
+                    accent = theme.colors.accent,
                     onClick = {
                         onInteract()
                         onPaneFocus(0)
@@ -1379,7 +1406,7 @@ fun NavigationPaneOverlay(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "Quick Roots",
-                    style = TextStyle(color = NeonGreen, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                    style = TextStyle(color = theme.colors.accent, fontWeight = FontWeight.Medium, fontSize = 14.sp)
                 )
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(quickTargets) { (label, path) ->
@@ -1398,7 +1425,7 @@ fun NavigationPaneOverlay(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "History",
-                    style = TextStyle(color = NeonGreen, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                    style = TextStyle(color = theme.colors.accent, fontWeight = FontWeight.Medium, fontSize = 14.sp)
                 )
                 if (pathHistory.isEmpty()) {
                     Text("No history yet.", color = Color.Gray, fontSize = 12.sp)
@@ -1430,36 +1457,38 @@ fun SplitPaneCard(
     onClick: (() -> Unit)?,
     selected: Boolean = false
 ) {
+    val theme = LocalGlaiveTheme.current
     val label = path?.trimEnd('/')?.substringAfterLast("/")?.ifEmpty { "Root" } ?: "—"
     val clickModifier = if (path != null && onClick != null) Modifier.clickable(onClick = onClick) else Modifier
     val borderColor = if (selected) accent else accent.copy(alpha = 0.4f)
-    val backgroundColor = if (selected) DeepSpace.copy(alpha = 0.9f) else DeepSpace.copy(alpha = 0.7f)
+    val backgroundColor = if (selected) theme.colors.background.copy(alpha = 0.9f) else theme.colors.background.copy(alpha = 0.7f)
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(theme.shapes.cornerRadius))
             .background(backgroundColor)
-            .border(1.dp, borderColor, RoundedCornerShape(12.dp))
+            .border(theme.shapes.borderWidth, borderColor, RoundedCornerShape(theme.shapes.cornerRadius))
             .then(clickModifier)
             .padding(12.dp)
     ) {
         Text(title.uppercase(Locale.ROOT), color = accent, fontSize = 11.sp, fontWeight = FontWeight.Medium)
         Spacer(modifier = Modifier.height(4.dp))
-        Text(label, color = SoftWhite, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(label, color = theme.colors.text, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
 @Composable
 fun HistoryChip(path: String, label: String? = null, onClick: () -> Unit) {
+    val theme = LocalGlaiveTheme.current
     val resolvedLabel = label ?: path.trimEnd('/').substringAfterLast("/").ifEmpty { "Root" }
     Column(
         modifier = Modifier
             .clip(RoundedCornerShape(8.dp))
-            .background(DeepSpace.copy(alpha = 0.8f))
-            .border(1.dp, SurfaceGray, RoundedCornerShape(8.dp))
+            .background(theme.colors.background.copy(alpha = 0.8f))
+            .border(1.dp, theme.colors.surface, RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
-        Text(resolvedLabel, color = SoftWhite, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Text(resolvedLabel, color = theme.colors.text, fontSize = 12.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -1469,6 +1498,7 @@ fun ReverseGestureHotZone(
     hasTrail: Boolean,
     onNavigateUp: () -> Unit
 ) {
+    val theme = LocalGlaiveTheme.current
     val haptic = LocalHapticFeedback.current
     Box(
         modifier = modifier
@@ -1493,7 +1523,7 @@ fun ReverseGestureHotZone(
                 Brush.verticalGradient(
                     colors = listOf(
                         Color.Transparent,
-                        DeepSpace.copy(alpha = 0.6f),
+                        theme.colors.background.copy(alpha = 0.6f),
                         Color.Transparent
                     )
                 )
@@ -1503,7 +1533,7 @@ fun ReverseGestureHotZone(
             Icon(
                 imageVector =Icons.Default.KeyboardArrowLeft,
                 contentDescription = "Reverse",
-                tint = NeonGreen,
+                tint = theme.colors.accent,
                 modifier = Modifier.align(Alignment.Center)
             )
         }
@@ -1523,21 +1553,22 @@ fun ControlDock(
     clipboardActive: Boolean,
     onPaste: () -> Unit
 ) {
+    val theme = LocalGlaiveTheme.current
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(50))
             .background(Color.Black.copy(alpha = 0.8f))
-            .border(1.dp, SurfaceGray, RoundedCornerShape(50))
+            .border(1.dp, theme.colors.surface, RoundedCornerShape(50))
             .padding(horizontal = 8.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         if (selectionActive) {
-            IconButton(onClick = onClearSelection) { Icon(imageVector =Icons.Default.Close, contentDescription = "Clear", tint = DangerRed) }
-            IconButton(onClick = onShareSelection) { Icon(imageVector =Icons.Default.Share, contentDescription = "Share", tint = NeonGreen) }
-            IconButton(onClick = onMoreSelection) { Icon(imageVector = Icons.Default.MoreVert, contentDescription = "More", tint = SoftWhite) }
+            IconButton(onClick = onClearSelection) { Icon(imageVector =Icons.Default.Close, contentDescription = "Clear", tint = theme.colors.error) }
+            IconButton(onClick = onShareSelection) { Icon(imageVector =Icons.Default.Share, contentDescription = "Share", tint = theme.colors.accent) }
+            IconButton(onClick = onMoreSelection) { Icon(imageVector = Icons.Default.MoreVert, contentDescription = "More", tint = theme.colors.text) }
         } else if (clipboardActive) {
             IconButton(onClick = onPaste) {
-                Icon(imageVector = Icons.Default.ContentPaste, contentDescription = "Paste", tint = NeonGreen)
+                Icon(imageVector = Icons.Default.ContentPaste, contentDescription = "Paste", tint = theme.colors.accent)
             }
         } else {
             SortChip("Name", SortMode.NAME, currentSort, ascending, onSortChange)
@@ -1556,12 +1587,13 @@ fun FileGridItem(
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
+    val theme = LocalGlaiveTheme.current
     val haptic = LocalHapticFeedback.current
     Column(
         modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (isSelected) NeonGreen.copy(alpha = 0.15f) else SurfaceGray)
-            .border(if (isSelected) 1.dp else 0.dp, if (isSelected) NeonGreen else Color.Transparent, RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(theme.shapes.cornerRadius))
+            .background(if (isSelected) theme.colors.accent.copy(alpha = 0.15f) else theme.colors.surface)
+            .border(if (isSelected) theme.shapes.borderWidth else 0.dp, if (isSelected) theme.colors.accent else Color.Transparent, RoundedCornerShape(theme.shapes.cornerRadius))
             .combinedClickable(
                 onClick = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() },
                 onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onLongClick() }
@@ -1574,7 +1606,7 @@ fun FileGridItem(
             contentAlignment = Alignment.Center
         ) {
             if (isSelected) {
-                Icon(imageVector =Icons.Default.Check, null, tint = NeonGreen)
+                Icon(imageVector =Icons.Default.Check, null, tint = theme.colors.accent)
             } else if (item.type == GlaiveItem.TYPE_IMG) {
                 AsyncImage(
                     model = File(item.path),
@@ -1587,7 +1619,7 @@ fun FileGridItem(
             }
         }
         Spacer(modifier = Modifier.height(6.dp))
-        Text(item.name, color = SoftWhite, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 11.sp, textAlign = TextAlign.Center)
+        Text(item.name, color = theme.colors.text, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 11.sp, textAlign = TextAlign.Center)
     }
 }
 
@@ -1607,10 +1639,11 @@ fun ContextMenuSheet(
     onFavorite: (Boolean) -> Unit,
     isFavorite: Boolean
 ) {
+    val theme = LocalGlaiveTheme.current
     val context = LocalContext.current
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = DeepSpace) {
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = theme.colors.background) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(item.name, style = MaterialTheme.typography.titleLarge, color = SoftWhite)
+            Text(item.name, style = MaterialTheme.typography.titleLarge, color = theme.colors.text)
             Spacer(modifier = Modifier.height(16.dp))
             ContextMenuItem(if (isFavorite) "Remove from Favorites" else "Add to Favorites", Icons.Default.Check, { onFavorite(!isFavorite) })
             ContextMenuItem("Select", Icons.Default.Check, onSelect)
@@ -1626,7 +1659,7 @@ fun ContextMenuSheet(
                 clipboard.setPrimaryClip(clip)
                 onDismiss() // Dismiss menu after copy
             })
-            ContextMenuItem("Delete", Icons.Default.Delete, onDelete, DangerRed)
+            ContextMenuItem("Delete", Icons.Default.Delete, onDelete, theme.colors.error)
             if (item.type != GlaiveItem.TYPE_DIR) {
                 ContextMenuItem("Edit", Icons.Default.Edit, onEdit)
                 ContextMenuItem("Share", Icons.Default.Share, onShare)
@@ -1636,42 +1669,45 @@ fun ContextMenuSheet(
 }
 
 @Composable
-fun ContextMenuItem(text: String, icon: ImageVector, onClick: () -> Unit, color: Color = SoftWhite) {
+fun ContextMenuItem(text: String, icon: ImageVector, onClick: () -> Unit, color: Color? = null) {
+    val theme = LocalGlaiveTheme.current
+    val resolvedColor = color ?: theme.colors.text
     Row(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(imageVector =icon, null, tint = color)
+        Icon(imageVector =icon, null, tint = resolvedColor)
         Spacer(modifier = Modifier.width(16.dp))
-        Text(text, color = color, fontSize = 16.sp)
+        Text(text, color = resolvedColor, fontSize = 16.sp)
     }
 }
 
 @Composable
 fun CreateDialog(onDismiss: () -> Unit, onCreate: (String, Boolean) -> Unit) {
+    val theme = LocalGlaiveTheme.current
     var name by remember { mutableStateOf("") }
     var isDir by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = SurfaceGray,
-        title = { Text("Create New", color = SoftWhite) },
+        containerColor = theme.colors.surface,
+        title = { Text("Create New", color = theme.colors.text) },
         text = {
             Column {
                 BasicTextField(
                     value = name,
                     onValueChange = { name = it },
-                    textStyle = TextStyle(color = SoftWhite, fontSize = 16.sp),
-                    modifier = Modifier.fillMaxWidth().background(DeepSpace, RoundedCornerShape(8.dp)).padding(12.dp)
+                    textStyle = TextStyle(color = theme.colors.text, fontSize = 16.sp),
+                    modifier = Modifier.fillMaxWidth().background(theme.colors.background, RoundedCornerShape(8.dp)).padding(12.dp)
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = isDir, onCheckedChange = { isDir = it })
-                    Text("Directory", color = SoftWhite)
+                    Text("Directory", color = theme.colors.text)
                 }
             }
         },
         confirmButton = {
-            Button(onClick = { onCreate(name, isDir) }, colors = ButtonDefaults.buttonColors(containerColor = NeonGreen)) {
+            Button(onClick = { onCreate(name, isDir) }, colors = ButtonDefaults.buttonColors(containerColor = theme.colors.accent)) {
                 Text("Create")
             }
         }
@@ -1680,27 +1716,28 @@ fun CreateDialog(onDismiss: () -> Unit, onCreate: (String, Boolean) -> Unit) {
 
 @Composable
 fun TextEditor(file: File, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    val theme = LocalGlaiveTheme.current
     var content by remember { mutableStateOf(file.readText()) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = DeepSpace,
+        containerColor = theme.colors.background,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-        title = { Text(file.name, color = SoftWhite) },
+        title = { Text(file.name, color = theme.colors.text) },
         text = {
             BasicTextField(
                 value = content,
                 onValueChange = { content = it },
-                textStyle = TextStyle(color = SoftWhite, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
-                modifier = Modifier.fillMaxSize().background(SurfaceGray, RoundedCornerShape(8.dp)).padding(8.dp)
+                textStyle = TextStyle(color = theme.colors.text, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                modifier = Modifier.fillMaxSize().background(theme.colors.surface, RoundedCornerShape(8.dp)).padding(8.dp)
             )
         },
         confirmButton = {
-            Button(onClick = { onSave(content) }, colors = ButtonDefaults.buttonColors(containerColor = NeonGreen)) {
+            Button(onClick = { onSave(content) }, colors = ButtonDefaults.buttonColors(containerColor = theme.colors.accent)) {
                 Text("Save")
             }
         },
         dismissButton = {
-            Button(onClick = onDismiss, colors = ButtonDefaults.buttonColors(containerColor = DangerRed)) {
+            Button(onClick = onDismiss, colors = ButtonDefaults.buttonColors(containerColor = theme.colors.error)) {
                 Text("Close")
             }
         }
@@ -1732,9 +1769,10 @@ fun FilterChip(
     onToggle: (Int) -> Unit,
     enabled: Boolean = true
 ) {
+    val theme = LocalGlaiveTheme.current
     val isSelected = activeFilters.contains(type)
-    val backgroundColor = if (isSelected) NeonGreen else SurfaceGray
-    val textColor = if (isSelected) DeepSpace else SoftWhite
+    val backgroundColor = if (isSelected) theme.colors.accent else theme.colors.surface
+    val textColor = if (isSelected) theme.colors.background else theme.colors.text
     
     Box(
         modifier = Modifier
@@ -1756,8 +1794,9 @@ fun SortChip(
     ascending: Boolean,
     onClick: (SortMode) -> Unit
 ) {
+    val theme = LocalGlaiveTheme.current
     val isSelected = mode == current
-    val background = if (isSelected) NeonGreen else Color.Transparent
+    val background = if (isSelected) theme.colors.accent else Color.Transparent
     val textColor = if (isSelected) Color.Black else Color.Gray
 
     Row(
@@ -1797,27 +1836,32 @@ fun MultiSelectionMenuSheet(
     onZip: () -> Unit,
     onCopyPath: () -> Unit
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = DeepSpace) {
+    val theme = LocalGlaiveTheme.current
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = theme.colors.background) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text("$count items selected", style = MaterialTheme.typography.titleLarge, color = SoftWhite)
+            Text("$count items selected", style = MaterialTheme.typography.titleLarge, color = theme.colors.text)
             Spacer(modifier = Modifier.height(16.dp))
             ContextMenuItem("Copy", Icons.Default.Share, onCopy)
             ContextMenuItem("Cut", Icons.Default.Edit, onCut)
             ContextMenuItem("Zip", Icons.Default.Archive, onZip)
             ContextMenuItem("Copy Path", Icons.Default.ContentPaste, onCopyPath)
-            ContextMenuItem("Delete", Icons.Default.Delete, onDelete, DangerRed)
+            ContextMenuItem("Delete", Icons.Default.Delete, onDelete, theme.colors.error)
         }
     }
 }
 
 // --- UTILS ---
 
-fun getTypeColor(type: Int): Color = when (type) {
-    GlaiveItem.TYPE_DIR -> NeonGreen
-    GlaiveItem.TYPE_IMG -> Color(0xFF2979FF)
-    GlaiveItem.TYPE_VID -> DangerRed
-    GlaiveItem.TYPE_APK -> Color(0xFFB2FF59)
-    else -> Color.Gray
+@Composable
+fun getTypeColor(type: Int): Color {
+    val theme = LocalGlaiveTheme.current
+    return when (type) {
+        GlaiveItem.TYPE_DIR -> theme.colors.accent
+        GlaiveItem.TYPE_IMG -> Color(0xFF2979FF)
+        GlaiveItem.TYPE_VID -> theme.colors.error
+        GlaiveItem.TYPE_APK -> Color(0xFFB2FF59)
+        else -> Color.Gray
+    }
 }
 
 fun getTypeIcon(type: Int): String = when (type) {

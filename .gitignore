@@ -38,3 +38,5 @@ obj/
 # Android SDK
 android_sdk/
 *.zip
+.cxx/
+*.log
