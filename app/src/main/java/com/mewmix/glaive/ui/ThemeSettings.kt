@@ -132,6 +132,52 @@ fun ColorPickerRow(label: String, color: Color, onColorChange: (Color) -> Unit) 
     var hexText by remember(color) {
         mutableStateOf(String.format("#%06X", (0xFFFFFF and color.toArgb())))
     }
+    var showPicker by remember { mutableStateOf(false) }
+
+    if (showPicker) {
+        Dialog(onDismissRequest = { showPicker = false }) {
+            var tempColor by remember { mutableStateOf(color) }
+            Card(
+                colors = CardDefaults.cardColors(containerColor = LocalGlaiveTheme.current.colors.background),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.border(1.dp, LocalGlaiveTheme.current.colors.surface, RoundedCornerShape(16.dp))
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("Pick Color", color = LocalGlaiveTheme.current.colors.text, style = MaterialTheme.typography.titleMedium)
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    HsvColorPicker(
+                        initialColor = color,
+                        onColorChanged = { tempColor = it }
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = { showPicker = false }) {
+                            Text("Cancel", color = LocalGlaiveTheme.current.colors.text)
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                onColorChange(tempColor)
+                                showPicker = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = LocalGlaiveTheme.current.colors.accent)
+                        ) {
+                            Text("Select", color = Color.Black)
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -147,6 +193,7 @@ fun ColorPickerRow(label: String, color: Color, onColorChange: (Color) -> Unit) 
                     .clip(CircleShape)
                     .background(color)
                     .border(1.dp, Color.Gray, CircleShape)
+                    .clickable { showPicker = true }
             )
             Spacer(modifier = Modifier.width(8.dp))
             BasicTextField(
