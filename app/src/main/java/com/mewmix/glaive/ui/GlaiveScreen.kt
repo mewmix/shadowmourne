@@ -881,7 +881,7 @@ fun GlaiveScreen() {
                         showThemeSettings = false
                     },
                     onReset = {
-                        val defaults = ThemeConfig(ThemeDefaults.Colors, ThemeDefaults.Shapes, ThemeDefaults.Typography)
+                        val defaults = ThemeConfig(ThemeDefaults.Colors, ThemeDefaults.Shapes)
                         themeConfig = defaults
                         ThemeManager.saveTheme(context, defaults)
                         showThemeSettings = false
