@@ -119,6 +119,11 @@ fun GlaiveScreen() {
     GlaiveTheme(config = themeConfig) {
         val theme = LocalGlaiveTheme.current
 
+        // Clean cache on entry
+        LaunchedEffect(Unit) {
+            FileOperations.clearTempCache(context)
+        }
+
         // State
         var currentPath by remember { mutableStateOf(ROOT_PATH) }
         var rawList by remember { mutableStateOf<List<GlaiveItem>>(emptyList()) }
@@ -142,6 +147,8 @@ fun GlaiveScreen() {
         var clipboardItems by remember { mutableStateOf<List<File>>(emptyList()) }
         var isCutOperation by remember { mutableStateOf(false) }
         var showCreateDialog by remember { mutableStateOf(false) }
+        var showExtractDialog by remember { mutableStateOf(false) }
+        var extractTargetFile by remember { mutableStateOf<File?>(null) }
         var showEditor by remember { mutableStateOf(false) }
         var editorFile by remember { mutableStateOf<File?>(null) }
         val pathHistory = remember { mutableStateListOf<String>() }
@@ -237,6 +244,22 @@ fun GlaiveScreen() {
             }
         }
 
+        fun sortList(list: List<GlaiveItem>, mode: SortMode, asc: Boolean): List<GlaiveItem> {
+             return list.sortedWith { a, b ->
+                if (a.type == GlaiveItem.TYPE_DIR && b.type != GlaiveItem.TYPE_DIR) -1
+                else if (a.type != GlaiveItem.TYPE_DIR && b.type == GlaiveItem.TYPE_DIR) 1
+                else {
+                    val res = when (mode) {
+                        SortMode.NAME -> String.CASE_INSENSITIVE_ORDER.compare(a.name, b.name)
+                        SortMode.SIZE -> a.size.compareTo(b.size).takeIf { it != 0 } ?: String.CASE_INSENSITIVE_ORDER.compare(a.name, b.name)
+                        SortMode.DATE -> a.mtime.compareTo(b.mtime).takeIf { it != 0 } ?: String.CASE_INSENSITIVE_ORDER.compare(a.name, b.name)
+                        SortMode.TYPE -> a.type.compareTo(b.type).takeIf { it != 0 } ?: String.CASE_INSENSITIVE_ORDER.compare(a.name, b.name)
+                    }
+                    if (asc) res else -res
+                }
+            }
+        }
+
         // Navigation Helper
         fun navigateTo(paneIndex: Int, path: String) {
             DebugLogger.log("Navigating to $path in pane $paneIndex") {
@@ -274,19 +297,31 @@ fun GlaiveScreen() {
                     if (currentTab == 1) {
                         rawList = FavoritesManager.getFavorites(context)
                     } else {
-                        if (searchQuery.isEmpty()) {
-                            rawList = NativeCore.list(
-                                currentPath,
-                                getSortModeInt(sortMode),
-                                sortAscending,
-                                getFilterMask(activeFilters)
-                            )
+                        if (currentPath.contains(".zip")) {
+                             val zipPath = currentPath.substringBefore(".zip") + ".zip"
+                             val internalPath = currentPath.substringAfter(".zip", "")
+                             val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
+
+                             val fullList = FileOperations.listZip(zipPath, cleanInternal)
+                             val filtered = if (searchQuery.isNotEmpty()) {
+                                 fullList.filter { it.name.contains(searchQuery, true) }
+                             } else {
+                                 fullList
+                             }
+                             val mask = getFilterMask(activeFilters)
+                             val typeFiltered = if (mask != 0) {
+                                 filtered.filter { it.type == GlaiveItem.TYPE_DIR || ((1 shl it.type) and mask) != 0 }
+                             } else filtered
+
+                             rawList = sortList(typeFiltered, sortMode, sortAscending)
                         } else {
-                            if (currentPath.contains(".zip")) {
-                                val zipPath = currentPath.substringBefore(".zip") + ".zip"
-                                val internalPath = currentPath.substringAfter(".zip", "")
-                                val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
-                                rawList = FileOperations.listZip(zipPath, cleanInternal)
+                            if (searchQuery.isEmpty()) {
+                                rawList = NativeCore.list(
+                                    currentPath,
+                                    getSortModeInt(sortMode),
+                                    sortAscending,
+                                    getFilterMask(activeFilters)
+                                )
                             } else {
                                 delay(150)
                                 rawList = NativeCore.search(currentPath, searchQuery, getFilterMask(activeFilters))
@@ -307,19 +342,31 @@ fun GlaiveScreen() {
                     if (secondaryCurrentTab == 1) {
                         secondaryRawList = FavoritesManager.getFavorites(context)
                     } else {
-                        if (secondarySearchQuery.isEmpty()) {
-                            secondaryRawList = NativeCore.list(
-                                secondaryPath,
-                                getSortModeInt(sortMode),
-                                sortAscending,
-                                getFilterMask(activeFilters)
-                            )
+                        if (secondaryPath.contains(".zip")) {
+                             val zipPath = secondaryPath.substringBefore(".zip") + ".zip"
+                             val internalPath = secondaryPath.substringAfter(".zip", "")
+                             val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
+
+                             val fullList = FileOperations.listZip(zipPath, cleanInternal)
+                             val filtered = if (secondarySearchQuery.isNotEmpty()) {
+                                 fullList.filter { it.name.contains(secondarySearchQuery, true) }
+                             } else {
+                                 fullList
+                             }
+                             val mask = getFilterMask(activeFilters)
+                             val typeFiltered = if (mask != 0) {
+                                 filtered.filter { it.type == GlaiveItem.TYPE_DIR || ((1 shl it.type) and mask) != 0 }
+                             } else filtered
+
+                             secondaryRawList = sortList(typeFiltered, sortMode, sortAscending)
                         } else {
-                            if (secondaryPath.contains(".zip")) {
-                                val zipPath = secondaryPath.substringBefore(".zip") + ".zip"
-                                val internalPath = secondaryPath.substringAfter(".zip", "")
-                                val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
-                                secondaryRawList = FileOperations.listZip(zipPath, cleanInternal)
+                            if (secondarySearchQuery.isEmpty()) {
+                                secondaryRawList = NativeCore.list(
+                                    secondaryPath,
+                                    getSortModeInt(sortMode),
+                                    sortAscending,
+                                    getFilterMask(activeFilters)
+                                )
                             } else {
                                 delay(150)
                                 secondaryRawList = NativeCore.search(secondaryPath, secondarySearchQuery, getFilterMask(activeFilters))
@@ -427,13 +474,13 @@ fun GlaiveScreen() {
                     } else {
                         selectedPaths + item.path
                     }
-                } else if (item.type == GlaiveItem.TYPE_DIR || File(item.path).isDirectory || item.path.endsWith(".zip")) {
+                } else if (item.type == GlaiveItem.TYPE_DIR || File(item.path).isDirectory || (item.path.endsWith(".zip") && File(item.path).exists())) {
                     if (paneCurrentTab(paneIndex) == 1) {
                         setPaneCurrentTab(paneIndex, 0)
                     }
                     navigateTo(paneIndex, item.path)
                 } else {
-                    openFile(context, item)
+                    scope.launch { openFile(context, item) }
                 }
             }
             val handleItemLongPress: (Int, GlaiveItem) -> Unit = { paneIndex, item ->
@@ -602,7 +649,9 @@ fun GlaiveScreen() {
                         val lastPath = selectedPaths.lastOrNull()
                         if (lastPath != null) {
                             val item = (rawList + secondaryRawList).find { it.path == lastPath }
-                            if (item != null) sharePath(context, item)
+                            if (item != null) {
+                                scope.launch { sharePath(context, item) }
+                            }
                         }
                     },
                     onClearSelection = { selectedPaths = emptySet() },
@@ -700,7 +749,7 @@ fun GlaiveScreen() {
                         contextMenuTarget = null
                     },
                     onShare = {
-                        sharePath(context, contextMenuTarget!!)
+                        scope.launch { sharePath(context, contextMenuTarget!!) }
                         contextMenuTarget = null
                     },
                     onSelect = {
@@ -723,6 +772,11 @@ fun GlaiveScreen() {
                             }
                             contextMenuTarget = null
                         }
+                    },
+                    onExtractTo = {
+                        extractTargetFile = File(contextMenuTarget!!.path)
+                        showExtractDialog = true
+                        contextMenuTarget = null
                     },
                     isFavorite = FavoritesManager.isFavorite(context, contextMenuTarget!!.path),
                     onFavorite = { shouldAdd ->
@@ -759,6 +813,51 @@ fun GlaiveScreen() {
                                 selectedPaths = setOf(targetFile.absolutePath)
                             }
                             contextMenuTarget = null
+                        }
+                    }
+                )
+            }
+
+            // -- EXTRACT DIALOG --
+            if (showExtractDialog && extractTargetFile != null) {
+                ExtractDialog(
+                    file = extractTargetFile!!,
+                    onDismiss = { showExtractDialog = false; extractTargetFile = null },
+                    onExtract = { folderName ->
+                        scope.launch {
+                            val target = extractTargetFile!!
+                            val parent = if (target.path.contains(".zip") && !target.exists()) {
+                                // Inside zip? Parent is likely the zip file's parent?
+                                // No, usually we extract relative to current view or zip location.
+                                // Let's assume we extract to the same directory as the zip file or current pane path.
+                                // If target is virtual, we can't get parentFile nicely.
+                                // Let's fallback to panePath.
+                                File(panePath(activePane))
+                            } else {
+                                target.parentFile ?: target
+                            }
+
+                            val destDir = File(parent, folderName)
+                            if (!destDir.exists()) destDir.mkdirs()
+
+                            if (target.path.contains(".zip") && !target.exists()) {
+                                // Virtual file/folder inside zip
+                                val zipPath = target.path.substringBefore(".zip") + ".zip"
+                                val entryPath = target.path.substringAfter(".zip")
+                                val cleanEntry = if (entryPath.startsWith("/")) entryPath.substring(1) else entryPath
+
+                                if (cleanEntry.isNotEmpty()) {
+                                    val destFile = File(destDir, File(cleanEntry).name)
+                                    FileOperations.extractFile(File(zipPath), cleanEntry, destFile)
+                                }
+                            } else {
+                                FileOperations.unzip(target, destDir)
+                            }
+
+                            val updated = NativeCore.list(panePath(activePane))
+                            if (activePane == 0) rawList = updated else secondaryRawList = updated
+                            showExtractDialog = false
+                            extractTargetFile = null
                         }
                     }
                 )
@@ -1682,6 +1781,7 @@ fun ContextMenuSheet(
     onSelect: () -> Unit,
     onZip: () -> Unit,
     onUnzip: () -> Unit,
+    onExtractTo: () -> Unit,
     onFavorite: (Boolean) -> Unit,
     isFavorite: Boolean,
     onOpenFileLocation: () -> Unit
@@ -1700,6 +1800,7 @@ fun ContextMenuSheet(
             ContextMenuItem("Zip", Icons.Default.Archive, onZip)
             if (item.path.endsWith(".zip")) {
                  ContextMenuItem("Unzip Here", Icons.Default.Archive, onUnzip)
+                 ContextMenuItem("Extract to...", Icons.Default.CallSplit, onExtractTo)
             }
             ContextMenuItem("Copy Path", Icons.Default.ContentPaste, {
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
@@ -1757,6 +1858,41 @@ fun CreateDialog(onDismiss: () -> Unit, onCreate: (String, Boolean) -> Unit) {
         confirmButton = {
             Button(onClick = { onCreate(name, isDir) }, colors = ButtonDefaults.buttonColors(containerColor = theme.colors.accent)) {
                 Text("Create")
+            }
+        }
+    )
+}
+
+@Composable
+fun ExtractDialog(file: File, onDismiss: () -> Unit, onExtract: (String) -> Unit) {
+    val theme = LocalGlaiveTheme.current
+    val defaultName = if (file.name.endsWith(".zip")) file.name.removeSuffix(".zip") else file.name
+    var name by remember { mutableStateOf(defaultName) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = theme.colors.surface,
+        title = { Text("Extract to...", color = theme.colors.text) },
+        text = {
+            Column {
+                Text("Destination Folder Name:", color = theme.colors.text, fontSize = 12.sp)
+                Spacer(modifier = Modifier.height(8.dp))
+                BasicTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    textStyle = TextStyle(color = theme.colors.text, fontSize = 16.sp),
+                    modifier = Modifier.fillMaxWidth().background(theme.colors.background, RoundedCornerShape(8.dp)).padding(12.dp)
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onExtract(name) }, colors = ButtonDefaults.buttonColors(containerColor = theme.colors.accent)) {
+                Text("Extract")
+            }
+        },
+        dismissButton = {
+             Button(onClick = onDismiss, colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent)) {
+                Text("Cancel", color = theme.colors.text)
             }
         }
     )
@@ -1940,14 +2076,25 @@ fun formatDate(millis: Long): String {
     return format.format(date)
 }
 
-private fun sharePath(context: Context, item: GlaiveItem) {
+private suspend fun sharePath(context: Context, item: GlaiveItem) {
     if (item.type == GlaiveItem.TYPE_DIR) return
-    val file = File(item.path)
-    if (!file.exists()) return
 
-    val uri = runCatching {
-        FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
-    }.getOrElse { return }
+    val uri: Uri?
+    if (item.path.contains(".zip") && !File(item.path).exists()) {
+        val zipPath = item.path.substringBefore(".zip") + ".zip"
+        val entryPath = item.path.substringAfter(".zip")
+        val cleanEntry = if (entryPath.startsWith("/")) entryPath.substring(1) else entryPath
+        val tempFile = FileOperations.createTempFileForView(context, zipPath, cleanEntry) ?: return
+        uri = runCatching {
+            FileProvider.getUriForFile(context, "${context.packageName}.provider", tempFile)
+        }.getOrElse { return }
+    } else {
+        val file = File(item.path)
+        if (!file.exists()) return
+        uri = runCatching {
+            FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
+        }.getOrElse { return }
+    }
 
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = getSmartMimeType(item.path)
@@ -1957,12 +2104,24 @@ private fun sharePath(context: Context, item: GlaiveItem) {
     context.startActivity(Intent.createChooser(intent, "Share"))
 }
 
-private fun openFile(context: Context, item: GlaiveItem) {
+private suspend fun openFile(context: Context, item: GlaiveItem) {
     if (item.type == GlaiveItem.TYPE_DIR) return
-    val file = File(item.path)
-    val uri = runCatching {
-        FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
-    }.getOrElse { return }
+
+    val uri: Uri?
+    if (item.path.contains(".zip") && !File(item.path).exists()) {
+        val zipPath = item.path.substringBefore(".zip") + ".zip"
+        val entryPath = item.path.substringAfter(".zip")
+        val cleanEntry = if (entryPath.startsWith("/")) entryPath.substring(1) else entryPath
+        val tempFile = FileOperations.createTempFileForView(context, zipPath, cleanEntry) ?: return
+        uri = runCatching {
+            FileProvider.getUriForFile(context, "${context.packageName}.provider", tempFile)
+        }.getOrElse { return }
+    } else {
+        val file = File(item.path)
+        uri = runCatching {
+            FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
+        }.getOrElse { return }
+    }
 
     val intent = Intent(Intent.ACTION_VIEW).apply {
         setDataAndType(uri, mimeFor(item))

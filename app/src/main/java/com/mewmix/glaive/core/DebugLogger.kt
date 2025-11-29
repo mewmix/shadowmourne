@@ -6,7 +6,11 @@ object DebugLogger {
     private const val TAG = "GlaiveDebug"
 
     fun log(message: String) {
-        Log.d(TAG, message)
+        try {
+            Log.d(TAG, message)
+        } catch (e: RuntimeException) {
+            println("$TAG: $message")
+        }
     }
 
     fun <T> log(message: String, block: () -> T): T {

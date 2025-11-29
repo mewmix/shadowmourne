@@ -1,5 +1,6 @@
 package com.mewmix.glaive.core
 
+import android.content.Context
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -215,6 +216,56 @@ object FileOperations {
         }
     }
 
+    suspend fun extractFile(zipFile: File, entryPath: String, destFile: File): Boolean = withContext(Dispatchers.IO) {
+        try {
+            java.util.zip.ZipFile(zipFile).use { zip ->
+                val entry = zip.getEntry(entryPath) ?: return@use false
+                zip.getInputStream(entry).use { input ->
+                    FileOutputStream(destFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                true
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    suspend fun createTempFileForView(context: Context, zipPath: String, entryPath: String): File? = withContext(Dispatchers.IO) {
+        try {
+            val cacheDir = File(context.cacheDir, "glaive_temp")
+            if (!cacheDir.exists()) cacheDir.mkdirs()
+
+            val fileName = entryPath.substringAfterLast('/')
+            val tempFile = File(cacheDir, fileName)
+
+            // Overwrite to ensure fresh content
+            if (extractFile(File(zipPath), entryPath, tempFile)) {
+                // We cannot use deleteOnExit safely on Android for long running processes,
+                // but we should eventually clean this up.
+                tempFile
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    suspend fun clearTempCache(context: Context) = withContext(Dispatchers.IO) {
+        try {
+            val cacheDir = File(context.cacheDir, "glaive_temp")
+            if (cacheDir.exists()) {
+                cacheDir.deleteRecursively()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     suspend fun addToZip(zipFile: File, files: List<File>, parentPathInZip: String = ""): Boolean = withContext(Dispatchers.IO) {
         val tempFile = File(zipFile.parent, "${zipFile.name}.tmp")
         try {
@@ -236,11 +287,6 @@ object FileOperations {
                 val prefix = if (parentPathInZip.isNotEmpty() && !parentPathInZip.endsWith("/")) "$parentPathInZip/" else parentPathInZip
                 files.forEach { file ->
                     if (file.isDirectory) {
-                        // For directories, we need to preserve structure relative to the file itself, but prefixed with parentPathInZip
-                        // This is tricky. Let's simplify: just add files flat or recursively?
-                        // If I paste a folder "foo" into "zip/bar/", I expect "bar/foo/..."
-                        // My zipDirectory helper uses basePath.
-                        // I need a modified zip helper that takes a prefix.
                         zipDirectoryWithPrefix(zos, file, file.parent, prefix)
                     } else {
                         zipFileWithPrefix(zos, file, file.parent, prefix)
