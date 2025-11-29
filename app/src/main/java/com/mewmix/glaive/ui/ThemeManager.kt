@@ -32,16 +32,9 @@ data class GlaiveShapes(
 )
 
 @Immutable
-data class GlaiveTypography(
-    val fontFamily: FontFamily,
-    val name: String
-)
-
-@Immutable
 data class ThemeConfig(
     val colors: GlaiveColors,
-    val shapes: GlaiveShapes,
-    val typography: GlaiveTypography
+    val shapes: GlaiveShapes
 )
 
 object ThemeDefaults {
@@ -56,14 +49,10 @@ object ThemeDefaults {
         cornerRadius = 12.dp,
         borderWidth = 1.dp
     )
-    val Typography = GlaiveTypography(
-        fontFamily = FontFamily.Monospace,
-        name = "Monospace"
-    )
 }
 
 val LocalGlaiveTheme = staticCompositionLocalOf {
-    ThemeConfig(ThemeDefaults.Colors, ThemeDefaults.Shapes, ThemeDefaults.Typography)
+    ThemeConfig(ThemeDefaults.Colors, ThemeDefaults.Shapes)
 }
 
 object ThemeManager {
@@ -77,7 +66,6 @@ object ThemeManager {
     private const val KEY_ERROR = "color_error"
     private const val KEY_RADIUS = "shape_radius"
     private const val KEY_BORDER = "shape_border"
-    private const val KEY_FONT = "type_font"
 
     fun loadTheme(context: Context): ThemeConfig {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -95,15 +83,7 @@ object ThemeManager {
             borderWidth = prefs.getFloat(KEY_BORDER, 1f).dp
         )
 
-        val fontName = prefs.getString(KEY_FONT, "Monospace") ?: "Monospace"
-        val fontFamily = when(fontName) {
-            "SansSerif" -> FontFamily.SansSerif
-            "Serif" -> FontFamily.Serif
-            "Cursive" -> FontFamily.Cursive
-            else -> FontFamily.Monospace
-        }
-
-        return ThemeConfig(colors, shapes, GlaiveTypography(fontFamily, fontName))
+        return ThemeConfig(colors, shapes)
     }
 
     fun saveTheme(context: Context, config: ThemeConfig) {
@@ -116,7 +96,6 @@ object ThemeManager {
             putInt(KEY_ERROR, config.colors.error.toArgb())
             putFloat(KEY_RADIUS, config.shapes.cornerRadius.value)
             putFloat(KEY_BORDER, config.shapes.borderWidth.value)
-            putString(KEY_FONT, config.typography.name)
         }.apply()
     }
 }
@@ -142,11 +121,11 @@ fun GlaiveTheme(
     ) {
         MaterialTheme(
             colorScheme = colorScheme,
-            typography = createTypography(config.typography.fontFamily),
+            typography = createTypography(FontFamily.Monospace),
             content = {
                 ProvideTextStyle(
                     value = TextStyle(
-                        fontFamily = config.typography.fontFamily,
+                        fontFamily = FontFamily.Monospace,
                         color = config.colors.text
                     ),
                     content = content

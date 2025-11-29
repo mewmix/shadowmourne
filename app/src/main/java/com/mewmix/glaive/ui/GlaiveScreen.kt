@@ -128,8 +128,10 @@ fun GlaiveScreen() {
         var sortAscending by remember { mutableStateOf(true) }
         var searchQuery by remember { mutableStateOf("") }
         var isSearchActive by remember { mutableStateOf(false) }
+        var isSearching by remember { mutableStateOf(false) }
         var secondarySearchQuery by remember { mutableStateOf("") }
         var secondaryIsSearchActive by remember { mutableStateOf(false) }
+        var secondaryIsSearching by remember { mutableStateOf(false) }
         var selectedPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
 
         // New State
@@ -175,6 +177,8 @@ fun GlaiveScreen() {
         fun setPaneSearchActive(index: Int, active: Boolean) {
             if (index == 0) isSearchActive = active else secondaryIsSearchActive = active
         }
+        fun paneIsSearching(index: Int): Boolean = if (index == 0) isSearching else secondaryIsSearching
+
         fun paneCurrentTab(index: Int): Int = if (index == 0) currentTab else secondaryCurrentTab
         fun setPaneCurrentTab(index: Int, tab: Int) {
             if (index == 0) currentTab = tab else secondaryCurrentTab = tab
@@ -265,27 +269,32 @@ fun GlaiveScreen() {
         // Load Data / Search with Debounce
         LaunchedEffect(currentPath, searchQuery, currentTab, sortMode, sortAscending, activeFilters) {
             DebugLogger.logSuspend("Loading data for path: $currentPath") {
-                if (currentTab == 1) {
-                    rawList = FavoritesManager.getFavorites(context)
-                } else {
-                    if (searchQuery.isEmpty()) {
-                        rawList = NativeCore.list(
-                            currentPath,
-                            getSortModeInt(sortMode),
-                            sortAscending,
-                            getFilterMask(activeFilters)
-                        )
+                isSearching = true
+                try {
+                    if (currentTab == 1) {
+                        rawList = FavoritesManager.getFavorites(context)
                     } else {
-                        if (currentPath.contains(".zip")) {
-                            val zipPath = currentPath.substringBefore(".zip") + ".zip"
-                            val internalPath = currentPath.substringAfter(".zip", "")
-                            val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
-                            rawList = FileOperations.listZip(zipPath, cleanInternal)
+                        if (searchQuery.isEmpty()) {
+                            rawList = NativeCore.list(
+                                currentPath,
+                                getSortModeInt(sortMode),
+                                sortAscending,
+                                getFilterMask(activeFilters)
+                            )
                         } else {
-                            delay(300)
-                            rawList = NativeCore.search(currentPath, searchQuery, getFilterMask(activeFilters))
+                            if (currentPath.contains(".zip")) {
+                                val zipPath = currentPath.substringBefore(".zip") + ".zip"
+                                val internalPath = currentPath.substringAfter(".zip", "")
+                                val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
+                                rawList = FileOperations.listZip(zipPath, cleanInternal)
+                            } else {
+                                delay(150)
+                                rawList = NativeCore.search(currentPath, searchQuery, getFilterMask(activeFilters))
+                            }
                         }
                     }
+                } finally {
+                    isSearching = false
                 }
             }
         }
@@ -293,27 +302,32 @@ fun GlaiveScreen() {
         LaunchedEffect(secondaryPath, secondarySearchQuery, secondaryCurrentTab, sortMode, sortAscending, activeFilters, splitScopeEnabled) {
             if (!splitScopeEnabled) return@LaunchedEffect
             DebugLogger.logSuspend("Loading data for secondary path: $secondaryPath") {
-                if (secondaryCurrentTab == 1) {
-                    secondaryRawList = FavoritesManager.getFavorites(context)
-                } else {
-                    if (secondarySearchQuery.isEmpty()) {
-                        secondaryRawList = NativeCore.list(
-                            secondaryPath,
-                            getSortModeInt(sortMode),
-                            sortAscending,
-                            getFilterMask(activeFilters)
-                        )
+                secondaryIsSearching = true
+                try {
+                    if (secondaryCurrentTab == 1) {
+                        secondaryRawList = FavoritesManager.getFavorites(context)
                     } else {
-                        if (secondaryPath.contains(".zip")) {
-                            val zipPath = secondaryPath.substringBefore(".zip") + ".zip"
-                            val internalPath = secondaryPath.substringAfter(".zip", "")
-                            val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
-                            secondaryRawList = FileOperations.listZip(zipPath, cleanInternal)
+                        if (secondarySearchQuery.isEmpty()) {
+                            secondaryRawList = NativeCore.list(
+                                secondaryPath,
+                                getSortModeInt(sortMode),
+                                sortAscending,
+                                getFilterMask(activeFilters)
+                            )
                         } else {
-                            delay(300)
-                            secondaryRawList = NativeCore.search(secondaryPath, secondarySearchQuery, getFilterMask(activeFilters))
+                            if (secondaryPath.contains(".zip")) {
+                                val zipPath = secondaryPath.substringBefore(".zip") + ".zip"
+                                val internalPath = secondaryPath.substringAfter(".zip", "")
+                                val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
+                                secondaryRawList = FileOperations.listZip(zipPath, cleanInternal)
+                            } else {
+                                delay(150)
+                                secondaryRawList = NativeCore.search(secondaryPath, secondarySearchQuery, getFilterMask(activeFilters))
+                            }
                         }
                     }
+                } finally {
+                    secondaryIsSearching = false
                 }
             }
         }
@@ -434,6 +448,7 @@ fun GlaiveScreen() {
                 GlaiveHeader(
                     currentPath = activePanePath,
                     isSearchActive = activePaneSearch,
+                    isSearching = paneIsSearching(activePane),
                     searchQuery = paneSearchQuery(activePane),
                     onSearchQueryChange = { setPaneSearchQuery(activePane, it) },
                     onToggleSearch = { toggleSearch(activePane) },
@@ -866,7 +881,7 @@ fun GlaiveScreen() {
                         showThemeSettings = false
                     },
                     onReset = {
-                        val defaults = ThemeConfig(ThemeDefaults.Colors, ThemeDefaults.Shapes, ThemeDefaults.Typography)
+                        val defaults = ThemeConfig(ThemeDefaults.Colors, ThemeDefaults.Shapes)
                         themeConfig = defaults
                         ThemeManager.saveTheme(context, defaults)
                         showThemeSettings = false
@@ -892,6 +907,7 @@ data class GlaiveStats(
 fun GlaiveHeader(
     currentPath: String,
     isSearchActive: Boolean,
+    isSearching: Boolean,
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
     onToggleSearch: () -> Unit,
@@ -993,21 +1009,32 @@ fun GlaiveHeader(
                         // -- TOOLBAR MODE --
                         if (isSearchActive) {
                             // Search Field
-                            BasicTextField(
-                                value = searchQuery,
-                                onValueChange = onSearchQueryChange,
-                                textStyle = TextStyle(color = theme.colors.text, fontSize = 16.sp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .focusRequester(focusRequester),
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                                keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() }),
-                                decorationBox = { innerTextField ->
-                                    if (searchQuery.isEmpty()) Text("Type to hunt...", color = Color.Gray)
-                                    innerTextField()
+                            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+                                BasicTextField(
+                                    value = searchQuery,
+                                    onValueChange = onSearchQueryChange,
+                                    textStyle = TextStyle(color = theme.colors.text, fontSize = 16.sp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .focusRequester(focusRequester),
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                    keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() }),
+                                    decorationBox = { innerTextField ->
+                                        if (searchQuery.isEmpty()) Text("Type to hunt...", color = Color.Gray)
+                                        innerTextField()
+                                    }
+                                )
+                                if (isSearching) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .align(Alignment.CenterEnd),
+                                        color = theme.colors.accent,
+                                        strokeWidth = 2.dp
+                                    )
                                 }
-                            )
+                            }
                         } else {
                             // Action Icons Row
                             LazyRow(

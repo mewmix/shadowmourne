@@ -45,8 +45,6 @@ fun ThemeSettingsDialog(
     var cornerRadius by remember { mutableStateOf(currentTheme.shapes.cornerRadius.value) }
     var borderWidth by remember { mutableStateOf(currentTheme.shapes.borderWidth.value) }
 
-    var fontName by remember { mutableStateOf(currentTheme.typography.name) }
-
     Dialog(onDismissRequest = onDismiss) {
         Card(
             colors = CardDefaults.cardColors(containerColor = currentTheme.colors.background),
@@ -86,12 +84,6 @@ fun ThemeSettingsDialog(
                     }
 
                     item {
-                        Text("Typography", color = currentTheme.colors.accent, style = MaterialTheme.typography.titleMedium)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        FontSelector(fontName) { fontName = it }
-                    }
-
-                    item {
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
                             text = "Build Info",
@@ -128,17 +120,10 @@ fun ThemeSettingsDialog(
                     val accentContent = if (accent.luminance() < 0.5f) Color.White else Color.Black
                     Button(
                         onClick = {
-                            val fontFamily = when(fontName) {
-                                "SansSerif" -> FontFamily.SansSerif
-                                "Serif" -> FontFamily.Serif
-                                "Cursive" -> FontFamily.Cursive
-                                else -> FontFamily.Monospace
-                            }
                             onApply(
                                 ThemeConfig(
                                     colors = GlaiveColors(background, surface, text, accent, currentTheme.colors.error),
-                                    shapes = GlaiveShapes(cornerRadius.dp, borderWidth.dp),
-                                    typography = GlaiveTypography(fontFamily, fontName)
+                                    shapes = GlaiveShapes(cornerRadius.dp, borderWidth.dp)
                                 )
                             )
                         },
@@ -289,27 +274,3 @@ fun SliderRow(label: String, value: Float, min: Float, max: Float, onValueChange
     }
 }
 
-@Composable
-fun FontSelector(currentFont: String, onFontSelected: (String) -> Unit) {
-    val fonts = listOf("Monospace", "SansSerif", "Serif", "Cursive")
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(fonts) { font ->
-            val isSelected = font == currentFont
-            val accent = LocalGlaiveTheme.current.colors.accent
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(if (isSelected) accent else Color(0xFF222222))
-                    .clickable { onFontSelected(font) }
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                Text(
-                    text = font,
-                    color = if (isSelected) Color.Black else Color.Gray,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-    }
-}
