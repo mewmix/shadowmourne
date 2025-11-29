@@ -3,6 +3,13 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val gitCommitHash = try {
+    val process = ProcessBuilder("git", "rev-parse", "--short", "HEAD").start()
+    process.inputStream.reader().use { it.readText() }.trim()
+} catch (e: Exception) {
+    "unknown"
+}
+
 android {
     namespace = "com.mewmix.glaive"
     compileSdk = 34
@@ -25,6 +32,7 @@ android {
             useSupportLibrary = true
         }
         multiDexEnabled = true
+        buildConfigField("String", "GIT_COMMIT_HASH", "\"$gitCommitHash\"")
     }
 
     buildTypes {
@@ -46,6 +54,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.8"

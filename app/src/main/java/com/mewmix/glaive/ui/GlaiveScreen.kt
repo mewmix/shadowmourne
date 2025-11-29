@@ -39,6 +39,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -413,6 +414,9 @@ fun GlaiveScreen() {
                         selectedPaths + item.path
                     }
                 } else if (item.type == GlaiveItem.TYPE_DIR || File(item.path).isDirectory || item.path.endsWith(".zip")) {
+                    if (paneCurrentTab(paneIndex) == 1) {
+                        setPaneCurrentTab(paneIndex, 0)
+                    }
                     navigateTo(paneIndex, item.path)
                 } else {
                     openFile(context, item)
@@ -724,6 +728,21 @@ fun GlaiveScreen() {
                             FileOperations.unzip(targetFile, destDir)
                             val updated = NativeCore.list(panePath(activePane))
                             if (activePane == 0) rawList = updated else secondaryRawList = updated
+                            contextMenuTarget = null
+                        }
+                    },
+                    onOpenFileLocation = {
+                        scope.launch {
+                            val targetFile = File(contextMenuTarget!!.path)
+                            val parent = targetFile.parent
+                            if (parent != null) {
+                                if (paneIsSearchActive(contextMenuPane)) {
+                                    setPaneSearchActive(contextMenuPane, false)
+                                    setPaneSearchQuery(contextMenuPane, "")
+                                }
+                                navigateTo(contextMenuPane, parent)
+                                selectedPaths = setOf(targetFile.absolutePath)
+                            }
                             contextMenuTarget = null
                         }
                     }
@@ -1637,7 +1656,8 @@ fun ContextMenuSheet(
     onZip: () -> Unit,
     onUnzip: () -> Unit,
     onFavorite: (Boolean) -> Unit,
-    isFavorite: Boolean
+    isFavorite: Boolean,
+    onOpenFileLocation: () -> Unit
 ) {
     val theme = LocalGlaiveTheme.current
     val context = LocalContext.current
@@ -1645,6 +1665,7 @@ fun ContextMenuSheet(
         Column(modifier = Modifier.padding(16.dp)) {
             Text(item.name, style = MaterialTheme.typography.titleLarge, color = theme.colors.text)
             Spacer(modifier = Modifier.height(16.dp))
+            ContextMenuItem("Open File Location", Icons.Default.ArrowForward, onOpenFileLocation)
             ContextMenuItem(if (isFavorite) "Remove from Favorites" else "Add to Favorites", Icons.Default.Check, { onFavorite(!isFavorite) })
             ContextMenuItem("Select", Icons.Default.Check, onSelect)
             ContextMenuItem("Copy", Icons.Default.Share, onCopy)

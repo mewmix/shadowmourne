@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.mewmix.glaive.BuildConfig
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -88,6 +89,26 @@ fun ThemeSettingsDialog(
                         Text("Typography", color = currentTheme.colors.accent, style = MaterialTheme.typography.titleMedium)
                         Spacer(modifier = Modifier.height(8.dp))
                         FontSelector(fontName) { fontName = it }
+                    }
+
+                    item {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Build Info",
+                            color = currentTheme.colors.accent,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Version: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                            color = Color.Gray,
+                            fontSize = 12.sp
+                        )
+                        Text(
+                            text = "Commit: ${BuildConfig.GIT_COMMIT_HASH}",
+                            color = Color.Gray,
+                            fontSize = 12.sp
+                        )
                     }
                 }
 
