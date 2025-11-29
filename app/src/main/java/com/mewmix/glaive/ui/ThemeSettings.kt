@@ -230,7 +230,14 @@ fun ColorPickerRow(label: String, color: Color, onColorChange: (Color) -> Unit) 
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(label, color = Color.Gray, fontSize = 14.sp)
+        Text(
+            text = label,
+            style = TextStyle(
+                fontFamily = LocalGlaiveTheme.current.typography.fontFamily,
+                color = Color.Gray,
+                fontSize = 14.sp
+            )
+        )
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -273,8 +280,22 @@ fun SliderRow(label: String, value: Float, min: Float, max: Float, onValueChange
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(label, color = Color.Gray, fontSize = 14.sp)
-            Text("${value.toInt()} dp", color = Color.Gray, fontSize = 14.sp)
+            Text(
+                text = label,
+                style = TextStyle(
+                    fontFamily = LocalGlaiveTheme.current.typography.fontFamily,
+                    color = Color.Gray,
+                    fontSize = 14.sp
+                )
+            )
+            Text(
+                text = "${value.toInt()} dp",
+                style = TextStyle(
+                    fontFamily = LocalGlaiveTheme.current.typography.fontFamily,
+                    color = Color.Gray,
+                    fontSize = 14.sp
+                )
+            )
         }
         Slider(
             value = value,
@@ -305,9 +326,12 @@ fun FontSelector(currentFont: String, onFontSelected: (String) -> Unit) {
             ) {
                 Text(
                     text = font,
-                    color = if (isSelected) Color.Black else Color.Gray,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
+                    style = TextStyle(
+                        fontFamily = LocalGlaiveTheme.current.typography.fontFamily,
+                        color = if (isSelected) Color.Black else Color.Gray,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 )
             }
         }
