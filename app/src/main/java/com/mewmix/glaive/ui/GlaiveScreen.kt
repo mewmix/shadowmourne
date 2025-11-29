@@ -63,6 +63,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
@@ -1029,7 +1030,8 @@ fun GlaiveHeader(
                                     CircularProgressIndicator(
                                         modifier = Modifier
                                             .size(20.dp)
-                                            .align(Alignment.CenterEnd),
+                                            .align(Alignment.CenterEnd)
+                                            .zIndex(1f),
                                         color = theme.colors.accent,
                                         strokeWidth = 2.dp
                                     )

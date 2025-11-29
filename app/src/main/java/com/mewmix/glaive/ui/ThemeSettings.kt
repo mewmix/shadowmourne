@@ -1,5 +1,7 @@
 package com.mewmix.glaive.ui
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,6 +22,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -37,6 +40,7 @@ fun ThemeSettingsDialog(
     onApply: (ThemeConfig) -> Unit,
     onReset: () -> Unit
 ) {
+    val context = LocalContext.current
     var background by remember { mutableStateOf(currentTheme.colors.background) }
     var surface by remember { mutableStateOf(currentTheme.colors.surface) }
     var text by remember { mutableStateOf(currentTheme.colors.text) }
@@ -98,8 +102,12 @@ fun ThemeSettingsDialog(
                         )
                         Text(
                             text = "Commit: ${BuildConfig.GIT_COMMIT_HASH}",
-                            color = Color.Gray,
-                            fontSize = 12.sp
+                            color = currentTheme.colors.accent,
+                            fontSize = 12.sp,
+                            modifier = Modifier.clickable {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/mewmix/shadowmourne/commit/${BuildConfig.GIT_COMMIT_HASH}"))
+                                context.startActivity(intent)
+                            }
                         )
                     }
                 }
@@ -273,4 +281,3 @@ fun SliderRow(label: String, value: Float, min: Float, max: Float, onValueChange
         )
     }
 }
-
