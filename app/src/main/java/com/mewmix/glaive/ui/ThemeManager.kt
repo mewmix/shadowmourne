@@ -96,12 +96,7 @@ object ThemeManager {
         )
 
         val fontName = prefs.getString(KEY_FONT, "Monospace") ?: "Monospace"
-        val fontFamily = when(fontName) {
-            "SansSerif" -> FontFamily.SansSerif
-            "Serif" -> FontFamily.Serif
-            "Cursive" -> FontFamily.Cursive
-            else -> FontFamily.Monospace
-        }
+        val fontFamily = GoogleFontsProvider.getFontFamily(fontName)
 
         return ThemeConfig(colors, shapes, GlaiveTypography(fontFamily, fontName))
     }

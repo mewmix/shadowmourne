@@ -79,6 +79,7 @@ dependencies {
     // Icons used: AspectRatio, CallSplit, etc.
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.ui:ui-text-google-fonts:1.6.1")
     implementation("io.coil-kt:coil-compose:2.5.0")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

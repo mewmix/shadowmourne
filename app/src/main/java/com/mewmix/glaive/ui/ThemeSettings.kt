@@ -107,12 +107,7 @@ fun ThemeSettingsDialog(
                     val accentContent = if (accent.luminance() < 0.5f) Color.White else Color.Black
                     Button(
                         onClick = {
-                            val fontFamily = when(fontName) {
-                                "SansSerif" -> FontFamily.SansSerif
-                                "Serif" -> FontFamily.Serif
-                                "Cursive" -> FontFamily.Cursive
-                                else -> FontFamily.Monospace
-                            }
+                            val fontFamily = GoogleFontsProvider.getFontFamily(fontName)
                             onApply(
                                 ThemeConfig(
                                     colors = GlaiveColors(background, surface, text, accent, currentTheme.colors.error),
@@ -209,7 +204,14 @@ fun ColorPickerRow(label: String, color: Color, onColorChange: (Color) -> Unit) 
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(label, color = Color.Gray, fontSize = 14.sp)
+        Text(
+            text = label,
+            style = TextStyle(
+                fontFamily = LocalGlaiveTheme.current.typography.fontFamily,
+                color = Color.Gray,
+                fontSize = 14.sp
+            )
+        )
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -252,8 +254,22 @@ fun SliderRow(label: String, value: Float, min: Float, max: Float, onValueChange
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(label, color = Color.Gray, fontSize = 14.sp)
-            Text("${value.toInt()} dp", color = Color.Gray, fontSize = 14.sp)
+            Text(
+                text = label,
+                style = TextStyle(
+                    fontFamily = LocalGlaiveTheme.current.typography.fontFamily,
+                    color = Color.Gray,
+                    fontSize = 14.sp
+                )
+            )
+            Text(
+                text = "${value.toInt()} dp",
+                style = TextStyle(
+                    fontFamily = LocalGlaiveTheme.current.typography.fontFamily,
+                    color = Color.Gray,
+                    fontSize = 14.sp
+                )
+            )
         }
         Slider(
             value = value,
@@ -270,24 +286,54 @@ fun SliderRow(label: String, value: Float, min: Float, max: Float, onValueChange
 
 @Composable
 fun FontSelector(currentFont: String, onFontSelected: (String) -> Unit) {
-    val fonts = listOf("Monospace", "SansSerif", "Serif", "Cursive")
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(fonts) { font ->
-            val isSelected = font == currentFont
-            val accent = LocalGlaiveTheme.current.colors.accent
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(if (isSelected) accent else Color(0xFF222222))
-                    .clickable { onFontSelected(font) }
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                Text(
-                    text = font,
-                    color = if (isSelected) Color.Black else Color.Gray,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
+    val quickPicks = listOf("Roboto", "Open Sans", "Lato", "Montserrat", "Oswald", "Lobster", "Monospace", "SansSerif", "Serif", "Cursive")
+
+    Column {
+        // Custom Font Input
+        BasicTextField(
+            value = currentFont,
+            onValueChange = onFontSelected,
+            textStyle = TextStyle(
+                color = LocalGlaiveTheme.current.colors.text,
+                fontSize = 16.sp,
+                fontFamily = GoogleFontsProvider.getFontFamily(currentFont)
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF222222), RoundedCornerShape(8.dp))
+                .padding(12.dp),
+            decorationBox = { innerTextField ->
+                if (currentFont.isEmpty()) {
+                    Text("Enter font name...", color = Color.Gray)
+                }
+                innerTextField()
+            }
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Quick Picks
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(quickPicks) { font ->
+                val isSelected = font == currentFont
+                val accent = LocalGlaiveTheme.current.colors.accent
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isSelected) accent else Color(0xFF222222))
+                        .clickable { onFontSelected(font) }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = font,
+                        style = TextStyle(
+                            fontFamily = GoogleFontsProvider.getFontFamily(font),
+                            color = if (isSelected) Color.Black else Color.Gray,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+                }
             }
         }
     }

@@ -939,12 +939,12 @@ fun GlaiveHeader(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "${stats.fileCount} Files · ${stats.dirCount} Folders ",
-                    style = TextStyle(color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                    style = TextStyle(fontFamily = theme.typography.fontFamily, color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Medium)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
                     text = formatSize(stats.totalSize),
-                    style = TextStyle(color = theme.colors.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                    style = TextStyle(fontFamily = theme.typography.fontFamily, color = theme.colors.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                 )
             }
         }
@@ -977,7 +977,7 @@ fun GlaiveHeader(
                             BasicTextField(
                                 value = searchQuery,
                                 onValueChange = onSearchQueryChange,
-                                textStyle = TextStyle(color = theme.colors.text, fontSize = 16.sp),
+                                textStyle = TextStyle(fontFamily = theme.typography.fontFamily, color = theme.colors.text, fontSize = 16.sp),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .focusRequester(focusRequester),
@@ -1052,6 +1052,7 @@ fun TabItem(text: String, selected: Boolean, onClick: () -> Unit) {
         Text(
             text = text,
             style = TextStyle(
+                fontFamily = theme.typography.fontFamily,
                 color = if (selected) theme.colors.accent else Color.Gray,
                 fontWeight = FontWeight.Bold,
                 fontSize = 11.sp
@@ -1107,6 +1108,7 @@ fun BreadcrumbStrip(currentPath: String, onPathJump: (String) -> Unit) {
                 Text(
                     text = name.uppercase(),
                     style = TextStyle(
+                        fontFamily = theme.typography.fontFamily,
                         color = if (path == currentPath) theme.colors.accent else Color.Gray,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 13.sp
@@ -1282,6 +1284,7 @@ fun FileCard(
             Text(
                 text = item.name,
                 style = TextStyle(
+                    fontFamily = theme.typography.fontFamily,
                     color = if (isSelected) theme.colors.accent else theme.colors.text,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Medium
@@ -1302,6 +1305,7 @@ fun FileCard(
             Text(
                 text = infoText,
                 style = TextStyle(
+                    fontFamily = theme.typography.fontFamily,
                     color = Color.Gray,
                     fontSize = 11.sp
                 )
@@ -1348,7 +1352,7 @@ fun NavigationPaneOverlay(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "Navigation",
-                    style = TextStyle(color = theme.colors.text, fontWeight = FontWeight.Bold, fontSize = 20.sp),
+                    style = TextStyle(fontFamily = theme.typography.fontFamily, color = theme.colors.text, fontWeight = FontWeight.Bold, fontSize = 20.sp),
                     modifier = Modifier.weight(1f)
                 )
                 IconButton(
@@ -1406,7 +1410,7 @@ fun NavigationPaneOverlay(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "Quick Roots",
-                    style = TextStyle(color = theme.colors.accent, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                    style = TextStyle(fontFamily = theme.typography.fontFamily, color = theme.colors.accent, fontWeight = FontWeight.Medium, fontSize = 14.sp)
                 )
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(quickTargets) { (label, path) ->
@@ -1425,7 +1429,7 @@ fun NavigationPaneOverlay(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "History",
-                    style = TextStyle(color = theme.colors.accent, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                    style = TextStyle(fontFamily = theme.typography.fontFamily, color = theme.colors.accent, fontWeight = FontWeight.Medium, fontSize = 14.sp)
                 )
                 if (pathHistory.isEmpty()) {
                     Text("No history yet.", color = Color.Gray, fontSize = 12.sp)
@@ -1810,6 +1814,7 @@ fun SortChip(
         Text(
             text = label,
             style = TextStyle(
+                fontFamily = theme.typography.fontFamily,
                 color = textColor,
                 fontWeight = FontWeight.Bold,
                 fontSize = 12.sp
@@ -1819,7 +1824,7 @@ fun SortChip(
             Spacer(modifier = Modifier.width(4.dp))
             Text(
                 text = if (ascending) "↑" else "↓",
-                style = TextStyle(color = textColor, fontSize = 12.sp)
+                style = TextStyle(fontFamily = theme.typography.fontFamily, color = textColor, fontSize = 12.sp)
             )
         }
     }
