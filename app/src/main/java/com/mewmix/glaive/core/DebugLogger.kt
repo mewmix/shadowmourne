@@ -16,11 +16,20 @@ object DebugLogger {
     private const val MAX_MEMORY_LOGS = 1000
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
 
+    var isEnabled: Boolean = false
+        private set
+
     fun init(context: Context) {
+        // Load preference
+        val prefs = context.getSharedPreferences("glaive_prefs", Context.MODE_PRIVATE)
+        isEnabled = prefs.getBoolean("debug_logging_enabled", false)
+
         try {
             val dir = context.getExternalFilesDir(null) ?: context.filesDir
             logFile = File(dir, "glaive_debug.log")
-            log("DebugLogger initialized. Log file: ${logFile?.absolutePath}")
+            if (isEnabled) {
+                log("DebugLogger initialized. Log file: ${logFile?.absolutePath}")
+            }
         } catch (e: Exception) {
             try {
                 Log.e(TAG, "Failed to initialize file logger", e)
@@ -30,7 +39,18 @@ object DebugLogger {
         }
     }
 
+    fun setLoggingEnabled(context: Context, enabled: Boolean) {
+        isEnabled = enabled
+        val prefs = context.getSharedPreferences("glaive_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("debug_logging_enabled", enabled).apply()
+        if (enabled) {
+            log("Logging enabled by user")
+        }
+    }
+
     fun log(message: String) {
+        if (!isEnabled) return
+
         val timestamp = dateFormat.format(Date())
         val formattedMessage = "$timestamp: $message"
 
@@ -63,6 +83,7 @@ object DebugLogger {
     }
 
     fun log(message: String, t: Throwable) {
+        if (!isEnabled) return
         try {
             log("$message\n${Log.getStackTraceString(t)}")
         } catch (_: RuntimeException) {
@@ -71,6 +92,8 @@ object DebugLogger {
     }
 
     fun <T> log(message: String, block: () -> T): T {
+        if (!isEnabled) return block()
+
         log("$message: Starting")
         try {
             val result = block()
@@ -83,6 +106,8 @@ object DebugLogger {
     }
 
     suspend fun <T> logSuspend(message: String, block: suspend () -> T): T {
+        if (!isEnabled) return block()
+
         log("$message: Starting")
         try {
             val result = block()
@@ -103,6 +128,6 @@ object DebugLogger {
     fun clearLogs() {
         memoryLog.clear()
         logFile?.delete()
-        log("Logs cleared")
+        if (isEnabled) log("Logs cleared")
     }
 }

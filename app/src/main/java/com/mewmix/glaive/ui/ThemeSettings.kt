@@ -112,15 +112,39 @@ fun ThemeSettingsDialog(
                         Spacer(modifier = Modifier.height(16.dp))
 
                         var showDebugLogs by remember { mutableStateOf(false) }
+                        var debugEnabled by remember { mutableStateOf(com.mewmix.glaive.core.DebugLogger.isEnabled) }
+
                         if (showDebugLogs) {
                             DebugLogDialog(onDismiss = { showDebugLogs = false })
                         }
 
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Enable Debug Logging", color = currentTheme.colors.text)
+                            Switch(
+                                checked = debugEnabled,
+                                onCheckedChange = {
+                                    debugEnabled = it
+                                    com.mewmix.glaive.core.DebugLogger.setLoggingEnabled(context, it)
+                                },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = currentTheme.colors.accent,
+                                    checkedTrackColor = currentTheme.colors.accent.copy(alpha = 0.5f)
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
                         OutlinedButton(
                             onClick = { showDebugLogs = true },
                             modifier = Modifier.fillMaxWidth(),
+                            enabled = debugEnabled,
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = currentTheme.colors.accent),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, currentTheme.colors.accent)
+                            border = androidx.compose.foundation.BorderStroke(1.dp, if (debugEnabled) currentTheme.colors.accent else Color.Gray)
                         ) {
                             Text("View Debug Logs")
                         }
@@ -137,10 +161,10 @@ fun ThemeSettingsDialog(
                     }
                     Spacer(modifier = Modifier.weight(1f))
                     TextButton(onClick = onDismiss) {
-                        Text("Cancel", color = currentTheme.colors.text)
+                        Text("Cancel", color = currentTheme.colors.accent)
                     }
                     Spacer(modifier = Modifier.width(8.dp))
-                    val accentContent = if (accent.luminance() < 0.5f) Color.White else Color.Black
+                    // Requirement: Apply text must be BLACK
                     Button(
                         onClick = {
                             onApply(
@@ -152,7 +176,7 @@ fun ThemeSettingsDialog(
                         },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = accent,
-                            contentColor = accentContent
+                            contentColor = Color.Black
                         )
                     ) {
                         Text("Apply")

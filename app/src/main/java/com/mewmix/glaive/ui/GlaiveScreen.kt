@@ -99,6 +99,7 @@ import com.mewmix.glaive.core.DebugLogger
 import com.mewmix.glaive.core.FileOperations
 import com.mewmix.glaive.core.NativeCore
 import com.mewmix.glaive.core.FavoritesManager
+import com.mewmix.glaive.core.RecycleBinManager
 import com.mewmix.glaive.data.GlaiveItem
 import com.mewmix.glaive.core.ArchiveUtils
 import kotlinx.coroutines.CoroutineScope
@@ -179,6 +180,7 @@ fun GlaiveScreen() {
         // Blocking / Warning State
         var blockingMessage by remember { mutableStateOf<String?>(null) }
         var inefficientAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+        var deleteAction by remember { mutableStateOf<Pair<List<String>, Int>?>(null) } // Paths, PaneIndex
 
         val directorySizes = remember { mutableStateMapOf<String, Long>() }
 
@@ -228,6 +230,10 @@ fun GlaiveScreen() {
         fun paneCurrentTab(index: Int): Int = if (index == 0) currentTab else secondaryCurrentTab
         fun setPaneCurrentTab(index: Int, tab: Int) {
             if (index == 0) currentTab = tab else secondaryCurrentTab = tab
+        }
+
+        fun isRecycleBinActive(paneIndex: Int): Boolean {
+             return RecycleBinManager.isTrashItem(panePath(paneIndex))
         }
 
         fun keepNavigationPaneAlive() {
@@ -322,6 +328,19 @@ fun GlaiveScreen() {
                 try {
                     if (currentTab == 1) {
                         rawList = FavoritesManager.getFavorites(context)
+                    } else if (RecycleBinManager.isTrashItem(currentPath)) {
+                        // Load Trash Items
+                         val trashDir = File(currentPath)
+                         val files = trashDir.listFiles() ?: emptyArray()
+                         rawList = files.filter { it.name != "restore.index" }.map { file ->
+                             GlaiveItem(
+                                 name = file.name,
+                                 path = file.absolutePath,
+                                 type = if (file.isDirectory) GlaiveItem.TYPE_DIR else GlaiveItem.TYPE_FILE,
+                                 size = file.length(),
+                                 mtime = file.lastModified()
+                             )
+                         }
                     } else {
                         if (searchQuery.isEmpty()) {
                             val archiveRoot = FileOperations.getArchiveRoot(currentPath)
@@ -363,6 +382,19 @@ fun GlaiveScreen() {
                 try {
                     if (secondaryCurrentTab == 1) {
                         secondaryRawList = FavoritesManager.getFavorites(context)
+                    } else if (RecycleBinManager.isTrashItem(secondaryPath)) {
+                         // Load Trash Items
+                         val trashDir = File(secondaryPath)
+                         val files = trashDir.listFiles() ?: emptyArray()
+                         secondaryRawList = files.filter { it.name != "restore.index" }.map { file ->
+                             GlaiveItem(
+                                 name = file.name,
+                                 path = file.absolutePath,
+                                 type = if (file.isDirectory) GlaiveItem.TYPE_DIR else GlaiveItem.TYPE_FILE,
+                                 size = file.length(),
+                                 mtime = file.lastModified()
+                             )
+                         }
                     } else {
                         if (secondarySearchQuery.isEmpty()) {
                             val archiveRoot = FileOperations.getArchiveRoot(secondaryPath)
@@ -498,6 +530,10 @@ fun GlaiveScreen() {
                         setPaneCurrentTab(paneIndex, 0)
                     }
                     navigateTo(paneIndex, item.path)
+                } else if (RecycleBinManager.isTrashItem(item.path)) {
+                    // Do nothing or show restore dialog on click?
+                    // Let's stick to Context Menu for restore to avoid accidental actions
+                    Toast.makeText(context, "Long press to Restore or Delete", Toast.LENGTH_SHORT).show()
                 } else {
                     openFile(context, item)
                 }
@@ -680,7 +716,11 @@ fun GlaiveScreen() {
                     onClearSelection = { selectedPaths = emptySet() },
                     onMoreSelection = { showMultiSelectionMenu = true },
                     clipboardActive = clipboardItems.isNotEmpty(),
-                    onPaste = { handlePaste(activePane) }
+                    onPaste = { handlePaste(activePane) },
+                    onSelectAll = {
+                        val allItems = if (activePane == 0) rawList else secondaryRawList
+                        selectedPaths = allItems.map { it.path }.toSet()
+                    }
                 )
             }
 
@@ -739,33 +779,31 @@ fun GlaiveScreen() {
                         contextMenuTarget = null
                     },
                     onDelete = {
-                        val path = contextMenuTarget!!.path
-                        runBlocking("Deleting ${File(path).name}...") {
-                            val archiveRoot = FileOperations.getArchiveRoot(path)
-
-                            if (archiveRoot != null) {
-                                val internalPath = path.substring(archiveRoot.length)
-                                val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
-
-                                FileOperations.removeFromArchive(File(archiveRoot), listOf(cleanInternal))
-
-                                // Refresh
-                                val parentInternal = cleanInternal.substringBeforeLast("/", "")
-                                if (contextMenuPane == 0) {
-                                    rawList = FileOperations.listArchive(archiveRoot, parentInternal)
-                                } else {
-                                    secondaryRawList = FileOperations.listArchive(archiveRoot, parentInternal)
-                                }
-                            } else {
-                                FileOperations.delete(File(path))
-                                if (contextMenuPane == 0) {
-                                    rawList = NativeCore.list(currentPath)
-                                } else {
-                                    secondaryRawList = NativeCore.list(secondaryPath)
-                                }
-                            }
-                            contextMenuTarget = null
-                        }
+                        deleteAction = Pair(listOf(contextMenuTarget!!.path), contextMenuPane)
+                        contextMenuTarget = null
+                    },
+                    isTrashItem = RecycleBinManager.isTrashItem(contextMenuTarget!!.path),
+                    onRestore = {
+                         val file = File(contextMenuTarget!!.path)
+                         runBlocking("Restoring ${file.name}...") {
+                             RecycleBinManager.restore(file)
+                             // Refresh
+                             if (contextMenuPane == 0) {
+                                 // Force refresh
+                                 val trashDir = File(panePath(0))
+                                 val files = trashDir.listFiles() ?: emptyArray()
+                                 rawList = files.filter { it.name != "restore.index" }.map { f ->
+                                     GlaiveItem(f.name, f.absolutePath, if (f.isDirectory) GlaiveItem.TYPE_DIR else GlaiveItem.TYPE_FILE, f.length(), f.lastModified())
+                                 }
+                             } else {
+                                 val trashDir = File(panePath(1))
+                                 val files = trashDir.listFiles() ?: emptyArray()
+                                 secondaryRawList = files.filter { it.name != "restore.index" }.map { f ->
+                                     GlaiveItem(f.name, f.absolutePath, if (f.isDirectory) GlaiveItem.TYPE_DIR else GlaiveItem.TYPE_FILE, f.length(), f.lastModified())
+                                 }
+                             }
+                             contextMenuTarget = null
+                         }
                     },
                     onEdit = {
                         editorFile = File(contextMenuTarget!!.path)
@@ -791,8 +829,10 @@ fun GlaiveScreen() {
                             FileOperations.createArchive(listOf(targetFile), zipFile)
                             if (contextMenuPane == 0) {
                                 rawList = NativeCore.list(currentPath)
+                                selectedPaths = setOf(zipFile.absolutePath)
                             } else {
                                 secondaryRawList = NativeCore.list(secondaryPath)
+                                selectedPaths = setOf(zipFile.absolutePath)
                             }
                             contextMenuTarget = null
                         }
@@ -809,8 +849,10 @@ fun GlaiveScreen() {
                                 FileOperations.createArchive(listOf(targetFile), zstFile)
                                 if (contextMenuPane == 0) {
                                     rawList = NativeCore.list(currentPath)
+                                    selectedPaths = setOf(zstFile.absolutePath)
                                 } else {
                                     secondaryRawList = NativeCore.list(secondaryPath)
+                                    selectedPaths = setOf(zstFile.absolutePath)
                                 }
                                 contextMenuTarget = null
                             }
@@ -874,35 +916,8 @@ fun GlaiveScreen() {
                         showMultiSelectionMenu = false
                     },
                     onDelete = {
-                        val count = selectedPaths.size
-                        runBlocking("Deleting $count items...") {
-                            val firstPath = selectedPaths.firstOrNull()
-                            val archiveRoot = if (firstPath != null) FileOperations.getArchiveRoot(firstPath) else null
-
-                            if (archiveRoot != null) {
-                                 val internalPaths = selectedPaths.map {
-                                     val ip = it.substring(archiveRoot.length)
-                                     if (ip.startsWith("/")) ip.substring(1) else ip
-                                 }
-
-                                 FileOperations.removeFromArchive(File(archiveRoot), internalPaths)
-
-                                 // Refresh
-                                 val firstInternal = internalPaths.first()
-                                 val parentInternal = firstInternal.substringBeforeLast("/", "")
-                                 if (activePane == 0) {
-                                     rawList = FileOperations.listArchive(archiveRoot, parentInternal)
-                                 } else {
-                                     secondaryRawList = FileOperations.listArchive(archiveRoot, parentInternal)
-                                 }
-                            } else {
-                                selectedPaths.forEach { FileOperations.delete(File(it)) }
-                                val updated = NativeCore.list(panePath(activePane))
-                                if (activePane == 0) rawList = updated else secondaryRawList = updated
-                            }
-                            selectedPaths = emptySet()
-                            showMultiSelectionMenu = false
-                        }
+                         deleteAction = Pair(selectedPaths.toList(), activePane)
+                         showMultiSelectionMenu = false
                     },
                     onZip = {
                         val files = selectedPaths.map { File(it) }
@@ -914,7 +929,7 @@ fun GlaiveScreen() {
                                 FileOperations.createArchive(files, zipFile)
                                 val updated = NativeCore.list(panePath(activePane))
                                 if (activePane == 0) rawList = updated else secondaryRawList = updated
-                                selectedPaths = emptySet()
+                                selectedPaths = setOf(zipFile.absolutePath)
                                 showMultiSelectionMenu = false
                             }
                         }
@@ -930,10 +945,33 @@ fun GlaiveScreen() {
                                     FileOperations.createArchive(files, destFile)
                                     val updated = NativeCore.list(panePath(activePane))
                                     if (activePane == 0) rawList = updated else secondaryRawList = updated
-                                    selectedPaths = emptySet()
+                                    selectedPaths = setOf(destFile.absolutePath)
                                     showMultiSelectionMenu = false
                                 }
                             }
+                        }
+                    },
+                    isTrashMode = RecycleBinManager.isTrashItem(panePath(activePane)),
+                    onRestore = {
+                        val files = selectedPaths.map { File(it) }
+                        runBlocking("Restoring ${files.size} items...") {
+                            files.forEach { RecycleBinManager.restore(it) }
+                            // Refresh
+                            if (activePane == 0) {
+                                val trashDir = File(panePath(0))
+                                val f = trashDir.listFiles() ?: emptyArray()
+                                rawList = f.filter { it.name != "restore.index" }.map { f ->
+                                     GlaiveItem(f.name, f.absolutePath, if (f.isDirectory) GlaiveItem.TYPE_DIR else GlaiveItem.TYPE_FILE, f.length(), f.lastModified())
+                                 }
+                            } else {
+                                val trashDir = File(panePath(1))
+                                val f = trashDir.listFiles() ?: emptyArray()
+                                secondaryRawList = f.filter { it.name != "restore.index" }.map { f ->
+                                     GlaiveItem(f.name, f.absolutePath, if (f.isDirectory) GlaiveItem.TYPE_DIR else GlaiveItem.TYPE_FILE, f.length(), f.lastModified())
+                                 }
+                            }
+                            selectedPaths = emptySet()
+                            showMultiSelectionMenu = false
                         }
                     },
                     onCopyPath = {
@@ -1012,6 +1050,66 @@ fun GlaiveScreen() {
                         action?.invoke()
                     },
                     onDismiss = { inefficientAction = null }
+                )
+            }
+
+            if (deleteAction != null) {
+                DeleteConfirmationDialog(
+                    count = deleteAction!!.first.size,
+                    isTrashBin = RecycleBinManager.isTrashItem(deleteAction!!.first.firstOrNull() ?: ""),
+                    onConfirm = { permanent ->
+                        val (paths, pane) = deleteAction!!
+                        runBlocking(if (permanent) "Deleting forever..." else "Moving to Trash...") {
+                            // Check if inside archive
+                            val firstPath = paths.firstOrNull() ?: return@runBlocking
+                            val archiveRoot = FileOperations.getArchiveRoot(firstPath)
+
+                            if (archiveRoot != null) {
+                                // Archives always delete permanently from inside (Recycle Bin not supported inside ZIPs yet)
+                                val internalPaths = paths.map {
+                                     val ip = it.substring(archiveRoot.length)
+                                     if (ip.startsWith("/")) ip.substring(1) else ip
+                                 }
+                                FileOperations.removeFromArchive(File(archiveRoot), internalPaths)
+                                // Refresh
+                                val firstInternal = internalPaths.first()
+                                val parentInternal = firstInternal.substringBeforeLast("/", "")
+                                if (pane == 0) {
+                                    rawList = FileOperations.listArchive(archiveRoot, parentInternal)
+                                } else {
+                                    secondaryRawList = FileOperations.listArchive(archiveRoot, parentInternal)
+                                }
+                            } else {
+                                // Standard Filesystem
+                                if (RecycleBinManager.isTrashItem(firstPath)) {
+                                    // Already in trash -> Delete Forever
+                                    paths.forEach { RecycleBinManager.deletePermanently(File(it)) }
+                                } else {
+                                    if (permanent) {
+                                        paths.forEach { FileOperations.delete(File(it)) }
+                                    } else {
+                                        paths.forEach { RecycleBinManager.moveToTrash(File(it)) }
+                                    }
+                                }
+
+                                // Refresh
+                                if (RecycleBinManager.isTrashItem(panePath(pane))) {
+                                     val trashDir = File(panePath(pane))
+                                     val f = trashDir.listFiles() ?: emptyArray()
+                                     val updated = f.filter { it.name != "restore.index" }.map { f ->
+                                         GlaiveItem(f.name, f.absolutePath, if (f.isDirectory) GlaiveItem.TYPE_DIR else GlaiveItem.TYPE_FILE, f.length(), f.lastModified())
+                                     }
+                                     if (pane == 0) rawList = updated else secondaryRawList = updated
+                                } else {
+                                    val updated = NativeCore.list(panePath(pane))
+                                    if (pane == 0) rawList = updated else secondaryRawList = updated
+                                }
+                            }
+                            selectedPaths = emptySet()
+                            deleteAction = null
+                        }
+                    },
+                    onDismiss = { deleteAction = null }
                 )
             }
         }
@@ -1801,7 +1899,8 @@ fun ControlDock(
     onClearSelection: () -> Unit,
     onMoreSelection: () -> Unit,
     clipboardActive: Boolean,
-    onPaste: () -> Unit
+    onPaste: () -> Unit,
+    onSelectAll: () -> Unit
 ) {
     val theme = LocalGlaiveTheme.current
     Row(
@@ -1815,6 +1914,7 @@ fun ControlDock(
         if (selectionActive) {
             IconButton(onClick = onClearSelection) { Icon(imageVector =Icons.Default.Close, contentDescription = "Clear", tint = theme.colors.error) }
             IconButton(onClick = onShareSelection) { Icon(imageVector =Icons.Default.Share, contentDescription = "Share", tint = theme.colors.accent) }
+            IconButton(onClick = onSelectAll) { Icon(imageVector = Icons.Default.Check, contentDescription = "Select All", tint = theme.colors.accent) }
             IconButton(onClick = onMoreSelection) { Icon(imageVector = Icons.Default.MoreVert, contentDescription = "More", tint = theme.colors.text) }
         } else if (clipboardActive) {
             IconButton(onClick = onPaste) {
@@ -1889,7 +1989,9 @@ fun ContextMenuSheet(
     onExtract: () -> Unit,
     onFavorite: (Boolean) -> Unit,
     isFavorite: Boolean,
-    onOpenFileLocation: () -> Unit
+    onOpenFileLocation: () -> Unit,
+    isTrashItem: Boolean = false,
+    onRestore: () -> Unit = {}
 ) {
     val theme = LocalGlaiveTheme.current
     val context = LocalContext.current
@@ -1897,26 +1999,33 @@ fun ContextMenuSheet(
         Column(modifier = Modifier.padding(16.dp)) {
             Text(item.name, style = MaterialTheme.typography.titleLarge, color = theme.colors.text)
             Spacer(modifier = Modifier.height(16.dp))
-            ContextMenuItem("Open File Location", Icons.AutoMirrored.Filled.ArrowForward, onOpenFileLocation)
-            ContextMenuItem(if (isFavorite) "Remove from Favorites" else "Add to Favorites", Icons.Default.Check, { onFavorite(!isFavorite) })
-            ContextMenuItem("Select", Icons.Default.Check, onSelect)
-            ContextMenuItem("Copy", Icons.Default.Share, onCopy)
-            ContextMenuItem("Cut", Icons.Default.Edit, onCut)
-            ContextMenuItem("Compress (Zip)", Icons.Default.Archive, onZip)
-            ContextMenuItem("Compress (.tar.zst)", Icons.Default.Archive, onCompressZstd)
-            if (FileOperations.isArchive(item.path)) {
-                 ContextMenuItem("Extract Here", Icons.Default.Archive, onExtract)
-            }
-            ContextMenuItem("Copy Path", Icons.Default.ContentPaste, {
-                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                val clip = android.content.ClipData.newPlainText("Path", item.path)
-                clipboard.setPrimaryClip(clip)
-                onDismiss()
-            })
-            ContextMenuItem("Delete", Icons.Default.Delete, onDelete, theme.colors.error)
-            if (item.type != GlaiveItem.TYPE_DIR) {
-                ContextMenuItem("Edit", Icons.Default.Edit, onEdit)
-                ContextMenuItem("Share", Icons.Default.Share, onShare)
+
+            if (isTrashItem) {
+                ContextMenuItem("Restore", Icons.Default.Check, onRestore)
+                ContextMenuItem("Delete Forever", Icons.Default.Delete, onDelete, theme.colors.error)
+                ContextMenuItem("Select", Icons.Default.Check, onSelect)
+            } else {
+                ContextMenuItem("Open File Location", Icons.AutoMirrored.Filled.ArrowForward, onOpenFileLocation)
+                ContextMenuItem(if (isFavorite) "Remove from Favorites" else "Add to Favorites", Icons.Default.Check, { onFavorite(!isFavorite) })
+                ContextMenuItem("Select", Icons.Default.Check, onSelect)
+                ContextMenuItem("Copy", Icons.Default.Share, onCopy)
+                ContextMenuItem("Cut", Icons.Default.Edit, onCut)
+                ContextMenuItem("Compress (Zip)", Icons.Default.Archive, onZip)
+                ContextMenuItem("Compress (.tar.zst)", Icons.Default.Archive, onCompressZstd)
+                if (FileOperations.isArchive(item.path)) {
+                     ContextMenuItem("Extract Here", Icons.Default.Archive, onExtract)
+                }
+                ContextMenuItem("Copy Path", Icons.Default.ContentPaste, {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    val clip = android.content.ClipData.newPlainText("Path", item.path)
+                    clipboard.setPrimaryClip(clip)
+                    onDismiss()
+                })
+                ContextMenuItem("Delete", Icons.Default.Delete, onDelete, theme.colors.error)
+                if (item.type != GlaiveItem.TYPE_DIR) {
+                    ContextMenuItem("Edit", Icons.Default.Edit, onEdit)
+                    ContextMenuItem("Share", Icons.Default.Share, onShare)
+                }
             }
         }
     }
@@ -2147,21 +2256,95 @@ fun MultiSelectionMenuSheet(
     onDelete: () -> Unit,
     onZip: () -> Unit,
     onCompressZstd: () -> Unit,
-    onCopyPath: () -> Unit
+    onCopyPath: () -> Unit,
+    isTrashMode: Boolean = false,
+    onRestore: () -> Unit = {}
 ) {
     val theme = LocalGlaiveTheme.current
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = theme.colors.background) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text("$count items selected", style = MaterialTheme.typography.titleLarge, color = theme.colors.text)
             Spacer(modifier = Modifier.height(16.dp))
-            ContextMenuItem("Copy", Icons.Default.Share, onCopy)
-            ContextMenuItem("Cut", Icons.Default.Edit, onCut)
-            ContextMenuItem("Compress (Zip)", Icons.Default.Archive, onZip)
-            ContextMenuItem("Compress (.tar.zst)", Icons.Default.Archive, onCompressZstd)
-            ContextMenuItem("Copy Path", Icons.Default.ContentPaste, onCopyPath)
-            ContextMenuItem("Delete", Icons.Default.Delete, onDelete, theme.colors.error)
+            if (isTrashMode) {
+                ContextMenuItem("Restore", Icons.Default.Check, onRestore)
+                ContextMenuItem("Delete Forever", Icons.Default.Delete, onDelete, theme.colors.error)
+            } else {
+                ContextMenuItem("Copy", Icons.Default.Share, onCopy)
+                ContextMenuItem("Cut", Icons.Default.Edit, onCut)
+                ContextMenuItem("Compress (Zip)", Icons.Default.Archive, onZip)
+                ContextMenuItem("Compress (.tar.zst)", Icons.Default.Archive, onCompressZstd)
+                ContextMenuItem("Copy Path", Icons.Default.ContentPaste, onCopyPath)
+                ContextMenuItem("Delete", Icons.Default.Delete, onDelete, theme.colors.error)
+            }
         }
     }
+}
+
+@Composable
+fun DeleteConfirmationDialog(
+    count: Int,
+    isTrashBin: Boolean,
+    onConfirm: (Boolean) -> Unit, // Boolean = Permanent
+    onDismiss: () -> Unit
+) {
+    val theme = LocalGlaiveTheme.current
+    var permanent by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = theme.colors.surface,
+        title = {
+            Text(
+                if (isTrashBin) "Delete Forever?" else "Delete $count items?",
+                color = theme.colors.error
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    if (isTrashBin) "These items will be permanently removed. This cannot be undone."
+                    else "Are you sure you want to delete these items?",
+                    color = theme.colors.text
+                )
+                if (!isTrashBin) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { permanent = !permanent }
+                    ) {
+                        Checkbox(
+                            checked = permanent,
+                            onCheckedChange = { permanent = it },
+                            colors = CheckboxDefaults.colors(
+                                checkedColor = theme.colors.error,
+                                uncheckedColor = theme.colors.text
+                            )
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Delete permanently (Skip Recycle Bin)", color = theme.colors.text, fontSize = 14.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(if (isTrashBin) true else permanent) },
+                colors = ButtonDefaults.buttonColors(containerColor = theme.colors.error)
+            ) {
+                Text(if (isTrashBin || permanent) "Delete Forever" else "Move to Trash")
+            }
+        },
+        dismissButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = theme.colors.surface)
+            ) {
+                Text("Cancel", color = theme.colors.text)
+            }
+        }
+    )
 }
 
 // --- UTILS ---

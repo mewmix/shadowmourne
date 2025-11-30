@@ -37,7 +37,7 @@ object FavoritesManager {
         val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         val paths = getFavoritesPaths(prefs)
         
-        return paths.mapNotNull { path ->
+        val items = paths.mapNotNull { path ->
             val file = File(path)
             if (file.exists()) {
                 GlaiveItem(
@@ -50,7 +50,19 @@ object FavoritesManager {
             } else {
                 null
             }
-        }
+        }.toMutableList()
+
+        // Inject Recycle Bin at the top
+        val recycleBinPath = RecycleBinManager.getTrashPath()
+        items.add(0, GlaiveItem(
+            name = "Recycle Bin",
+            path = recycleBinPath,
+            type = GlaiveItem.TYPE_DIR,
+            size = 0,
+            mtime = System.currentTimeMillis()
+        ))
+
+        return items
     }
 
     private fun saveFavoritesOrdered(prefs: SharedPreferences, paths: List<String>) {

@@ -52,12 +52,7 @@ object FileOperations {
     suspend fun extractArchive(archiveFile: File, destDir: File, entryPaths: List<String>? = null): Boolean {
         if (archiveFile.name.endsWith(".zip")) {
             // For Zip, we default to full unzip if entryPaths is null.
-            // Partial unzip not implemented for Zip in this helper yet, but needed for consistency?
-            // ArchiveUtils implements partial.
-            // If entryPaths is set, we might need to implement partial zip extraction.
             if (entryPaths != null) {
-                // TODO: Implement partial zip extraction if needed for preview
-                // For now, extract all is safer fallback or implement partial
                 return unzipPartial(archiveFile, destDir, entryPaths)
             }
             return unzip(archiveFile, destDir)
