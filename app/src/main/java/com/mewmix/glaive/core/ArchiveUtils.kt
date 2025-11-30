@@ -77,9 +77,8 @@ object ArchiveUtils {
                     }
                 }
             }
-        } catch (e: Exception) {
-            DebugLogger.log("Error listing archive $path: ${e.message}")
-            e.printStackTrace()
+        } catch (e: Throwable) {
+            DebugLogger.log("Error listing archive $path", e)
         }
         list
     }
@@ -109,9 +108,8 @@ object ArchiveUtils {
             extractTarStream(input, destDir, entryPaths)
             input.close()
             true
-        } catch (e: Exception) {
-            DebugLogger.log("Error extracting ${archiveFile.path}: ${e.message}")
-            e.printStackTrace()
+        } catch (e: Throwable) {
+            DebugLogger.log("Error extracting ${archiveFile.path}", e)
             false
         }
     }
@@ -144,9 +142,8 @@ object ArchiveUtils {
             tarOut.finish()
             out.close()
             true
-        } catch (e: Exception) {
-            DebugLogger.log("Error creating archive ${destFile.path}: ${e.message}")
-            e.printStackTrace()
+        } catch (e: Throwable) {
+            DebugLogger.log("Error creating archive ${destFile.path}", e)
             if (destFile.exists()) destFile.delete()
             false
         }
@@ -198,8 +195,8 @@ object ArchiveUtils {
             archiveFile.delete()
             tempFile.renameTo(archiveFile)
             true
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (e: Throwable) {
+            DebugLogger.log("Error adding to archive", e)
             tempFile.delete()
             false
         }
@@ -258,8 +255,8 @@ object ArchiveUtils {
             archiveFile.delete()
             tempFile.renameTo(archiveFile)
             true
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (e: Throwable) {
+            DebugLogger.log("Error removing from archive", e)
             tempFile.delete()
             false
         }

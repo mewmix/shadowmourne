@@ -13,6 +13,8 @@ import com.mewmix.glaive.ui.GlaiveScreen
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        com.mewmix.glaive.core.DebugLogger.init(this)
         
         // CHECK: Do we have total control?
         if (!hasAllFilesAccess()) {
