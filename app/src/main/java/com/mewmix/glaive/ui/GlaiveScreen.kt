@@ -62,6 +62,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -109,6 +111,14 @@ import kotlin.system.measureTimeMillis
 enum class SortMode { NAME, DATE, SIZE, TYPE }
 
 const val ROOT_PATH = "/storage/emulated/0"
+
+val INEFF_EXTENSIONS = setOf(
+    "mp4", "mkv", "avi", "mov", "webm",
+    "mp3", "aac", "flac", "ogg",
+    "jpg", "jpeg", "png", "webp", "gif",
+    "zip", "rar", "7z", "gz", "zst", "xz", "bz2", "tar",
+    "apk", "jar", "pdf", "docx", "xlsx"
+)
 
 @Composable
 fun GlaiveScreen() {
@@ -163,9 +173,40 @@ fun GlaiveScreen() {
         var maximizedPane by remember { mutableStateOf(-1) }
         var showMultiSelectionMenu by remember { mutableStateOf(false) }
 
+        // Blocking / Warning State
+        var blockingMessage by remember { mutableStateOf<String?>(null) }
+        var inefficientAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+
         val directorySizes = remember { mutableStateMapOf<String, Long>() }
 
         val scope = rememberCoroutineScope()
+
+        fun runBlocking(message: String, block: suspend () -> Unit) {
+            blockingMessage = message
+            scope.launch {
+                try {
+                    block()
+                } finally {
+                    blockingMessage = null
+                }
+            }
+        }
+
+        fun checkInefficientAndRun(files: List<File>, onProceed: () -> Unit) {
+            val hasCompressed = files.any { file ->
+                // Basic check on extension. For directories, we'd need to recurse,
+                // but for now we assume user knows what's in a dir or we only check file level.
+                // A deep check might be too slow for UI thread.
+                // If it is a directory, we can skip or assume it might contain mixed content.
+                // Strict check: if it is a file and matches extension.
+                !file.isDirectory && INEFF_EXTENSIONS.contains(file.extension.lowercase(Locale.getDefault()))
+            }
+            if (hasCompressed) {
+                inefficientAction = onProceed
+            } else {
+                onProceed()
+            }
+        }
 
         fun panePath(index: Int): String = if (index == 0) currentPath else secondaryPath
         fun setPanePath(index: Int, path: String) {
@@ -193,8 +234,10 @@ fun GlaiveScreen() {
         }
 
         fun handlePaste(paneIndex: Int) {
-            DebugLogger.log("Pasting ${clipboardItems.size} items to pane $paneIndex") {
-                scope.launch {
+            val count = clipboardItems.size
+            val op = if (isCutOperation) "Moving" else "Copying"
+            runBlocking("$op $count items...") {
+                DebugLogger.logSuspend("Pasting ${clipboardItems.size} items to pane $paneIndex") {
                     val targetPath = panePath(paneIndex)
                     val archiveRoot = FileOperations.getArchiveRoot(targetPath)
 
@@ -687,8 +730,8 @@ fun GlaiveScreen() {
                         contextMenuTarget = null
                     },
                     onDelete = {
-                        scope.launch {
-                            val path = contextMenuTarget!!.path
+                        val path = contextMenuTarget!!.path
+                        runBlocking("Deleting ${File(path).name}...") {
                             val archiveRoot = FileOperations.getArchiveRoot(path)
 
                             if (archiveRoot != null) {
@@ -729,12 +772,12 @@ fun GlaiveScreen() {
                         contextMenuTarget = null
                     },
                     onZip = {
-                        scope.launch {
-                            val targetFile = File(contextMenuTarget!!.path)
+                        val targetFile = File(contextMenuTarget!!.path)
+                        runBlocking("Zipping ${targetFile.name}...") {
                             val zipFile = File(targetFile.parent, "${targetFile.name}.zip")
                             if (targetFile.canonicalPath == zipFile.canonicalPath) {
                                 Toast.makeText(context, "Cannot zip a file into itself", Toast.LENGTH_SHORT).show()
-                                return@launch
+                                return@runBlocking
                             }
                             FileOperations.createArchive(listOf(targetFile), zipFile)
                             if (contextMenuPane == 0) {
@@ -746,20 +789,22 @@ fun GlaiveScreen() {
                         }
                     },
                     onCompressZstd = {
-                         scope.launch {
-                            val targetFile = File(contextMenuTarget!!.path)
-                            val zstFile = File(targetFile.parent, "${targetFile.name}.tar.zst")
-                            if (targetFile.canonicalPath == zstFile.canonicalPath) {
-                                Toast.makeText(context, "Cannot compress a file into itself", Toast.LENGTH_SHORT).show()
-                                return@launch
+                        val targetFile = File(contextMenuTarget!!.path)
+                        checkInefficientAndRun(listOf(targetFile)) {
+                             runBlocking("Compressing ${targetFile.name}...") {
+                                val zstFile = File(targetFile.parent, "${targetFile.name}.tar.zst")
+                                if (targetFile.canonicalPath == zstFile.canonicalPath) {
+                                    Toast.makeText(context, "Cannot compress a file into itself", Toast.LENGTH_SHORT).show()
+                                    return@runBlocking
+                                }
+                                FileOperations.createArchive(listOf(targetFile), zstFile)
+                                if (contextMenuPane == 0) {
+                                    rawList = NativeCore.list(currentPath)
+                                } else {
+                                    secondaryRawList = NativeCore.list(secondaryPath)
+                                }
+                                contextMenuTarget = null
                             }
-                            FileOperations.createArchive(listOf(targetFile), zstFile)
-                            if (contextMenuPane == 0) {
-                                rawList = NativeCore.list(currentPath)
-                            } else {
-                                secondaryRawList = NativeCore.list(secondaryPath)
-                            }
-                            contextMenuTarget = null
                         }
                     },
                     isFavorite = FavoritesManager.isFavorite(context, contextMenuTarget!!.path),
@@ -775,8 +820,8 @@ fun GlaiveScreen() {
                         contextMenuTarget = null
                     },
                     onExtract = {
-                        scope.launch {
-                            val targetFile = File(contextMenuTarget!!.path)
+                        val targetFile = File(contextMenuTarget!!.path)
+                        runBlocking("Extracting ${targetFile.name}...") {
                             val destDir = targetFile.parentFile ?: targetFile
                             FileOperations.extractArchive(targetFile, destDir)
                             val updated = NativeCore.list(panePath(activePane))
@@ -820,7 +865,8 @@ fun GlaiveScreen() {
                         showMultiSelectionMenu = false
                     },
                     onDelete = {
-                        scope.launch {
+                        val count = selectedPaths.size
+                        runBlocking("Deleting $count items...") {
                             val firstPath = selectedPaths.firstOrNull()
                             val archiveRoot = if (firstPath != null) FileOperations.getArchiveRoot(firstPath) else null
 
@@ -850,33 +896,35 @@ fun GlaiveScreen() {
                         }
                     },
                     onZip = {
-                        scope.launch {
-                            val files = selectedPaths.map { File(it) }
-                            if (files.isNotEmpty()) {
+                        val files = selectedPaths.map { File(it) }
+                        if (files.isNotEmpty()) {
+                            runBlocking("Zipping ${files.size} items...") {
                                 val parent = files.first().parentFile
                                 val zipName = if (files.size == 1) "${files.first().name}.zip" else "archive_${System.currentTimeMillis()}.zip"
                                 val zipFile = File(parent, zipName)
                                 FileOperations.createArchive(files, zipFile)
                                 val updated = NativeCore.list(panePath(activePane))
                                 if (activePane == 0) rawList = updated else secondaryRawList = updated
+                                selectedPaths = emptySet()
+                                showMultiSelectionMenu = false
                             }
-                            selectedPaths = emptySet()
-                            showMultiSelectionMenu = false
                         }
                     },
                     onCompressZstd = {
-                         scope.launch {
-                            val files = selectedPaths.map { File(it) }
-                            if (files.isNotEmpty()) {
-                                val parent = files.first().parentFile
-                                val name = if (files.size == 1) "${files.first().name}.tar.zst" else "archive_${System.currentTimeMillis()}.tar.zst"
-                                val destFile = File(parent, name)
-                                FileOperations.createArchive(files, destFile)
-                                val updated = NativeCore.list(panePath(activePane))
-                                if (activePane == 0) rawList = updated else secondaryRawList = updated
+                        val files = selectedPaths.map { File(it) }
+                        if (files.isNotEmpty()) {
+                            checkInefficientAndRun(files) {
+                                runBlocking("Compressing ${files.size} items...") {
+                                    val parent = files.first().parentFile
+                                    val name = if (files.size == 1) "${files.first().name}.tar.zst" else "archive_${System.currentTimeMillis()}.tar.zst"
+                                    val destFile = File(parent, name)
+                                    FileOperations.createArchive(files, destFile)
+                                    val updated = NativeCore.list(panePath(activePane))
+                                    if (activePane == 0) rawList = updated else secondaryRawList = updated
+                                    selectedPaths = emptySet()
+                                    showMultiSelectionMenu = false
+                                }
                             }
-                            selectedPaths = emptySet()
-                            showMultiSelectionMenu = false
                         }
                     },
                     onCopyPath = {
@@ -940,6 +988,21 @@ fun GlaiveScreen() {
                         ThemeManager.saveTheme(context, defaults)
                         showThemeSettings = false
                     }
+                )
+            }
+
+            if (blockingMessage != null) {
+                LoadingDialog(message = blockingMessage!!)
+            }
+
+            if (inefficientAction != null) {
+                InefficientWarningDialog(
+                    onConfirm = {
+                        val action = inefficientAction
+                        inefficientAction = null
+                        action?.invoke()
+                    },
+                    onDismiss = { inefficientAction = null }
                 )
             }
         }
@@ -1784,6 +1847,64 @@ fun ContextMenuItem(text: String, icon: ImageVector, onClick: () -> Unit, color:
         Spacer(modifier = Modifier.width(16.dp))
         Text(text, color = resolvedColor, fontSize = 16.sp)
     }
+}
+
+@Composable
+fun LoadingDialog(message: String) {
+    val theme = LocalGlaiveTheme.current
+    Dialog(
+        onDismissRequest = {}, // Not dismissible by user
+        properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(theme.shapes.cornerRadius))
+                .background(theme.colors.surface)
+                .border(1.dp, theme.colors.accent, RoundedCornerShape(theme.shapes.cornerRadius))
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator(color = theme.colors.accent)
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(message, color = theme.colors.text, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+fun InefficientWarningDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    val theme = LocalGlaiveTheme.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = theme.colors.surface,
+        title = { Text("Warning: Inefficient Compression", color = theme.colors.error) },
+        text = {
+            Text(
+                "You are attempting to compress files that are likely already compressed (e.g., videos, images, archives).\n\n" +
+                "Using Zstd on these files may result in zero space savings or even larger files, while wasting CPU time.\n\n" +
+                "Do you still want to proceed?",
+                color = theme.colors.text
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = theme.colors.error)
+            ) {
+                Text("Proceed Anyway")
+            }
+        },
+        dismissButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = theme.colors.surface)
+            ) {
+                Text("Cancel", color = theme.colors.text)
+            }
+        }
+    )
 }
 
 @Composable
