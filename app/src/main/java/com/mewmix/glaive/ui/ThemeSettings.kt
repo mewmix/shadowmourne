@@ -109,6 +109,21 @@ fun ThemeSettingsDialog(
                                 context.startActivity(intent)
                             }
                         )
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        var showDebugLogs by remember { mutableStateOf(false) }
+                        if (showDebugLogs) {
+                            DebugLogDialog(onDismiss = { showDebugLogs = false })
+                        }
+
+                        OutlinedButton(
+                            onClick = { showDebugLogs = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = currentTheme.colors.accent),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, currentTheme.colors.accent)
+                        ) {
+                            Text("View Debug Logs")
+                        }
                     }
                 }
 
