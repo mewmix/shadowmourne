@@ -38,11 +38,21 @@ typedef enum {
     TYPE_FILE = 6
 } FileType;
 
-// Unused functions removed
+// ==========================================
+// SEARCH CONTEXT
+// ==========================================
+typedef struct {
+    const char* query;
+    size_t qlen;
+    int glob_mode;
+    uint8_t first_char_lower;
+    uint8x16_t v_first_lower;
+    uint8x16_t v_first_upper;
+    int filterMask;
+} SearchContext;
 
 int64_t calculate_dir_size_recursive(int parent_fd, const char *path) {
     int64_t total_size = 0;
-    char child_path[PATH_MAX];
     struct stat st;
 
     // Open the directory relative to the parent file descriptor
@@ -73,10 +83,6 @@ int64_t calculate_dir_size_recursive(int parent_fd, const char *path) {
     }
 
     closedir(dir);
-    // fdopendir does not close the fd, so we must do it.
-    // close(dir_fd) is handled by closedir. Oh wait, the man page says fdopendir's fd is closed by closedir. Let's double check.
-    // "The file descriptor is closed automatically when the stream created by fdopendir() is closed with closedir()." - Correct.
-
     return total_size;
 }
 
@@ -97,22 +103,31 @@ static inline unsigned char fold_ci(unsigned char c) {
     return c;
 }
 
-int neon_contains(const char *haystack, const char *needle, size_t n_len) {
-    size_t h_len = strlen(haystack);
-    if (h_len < n_len) return 0;
+static int optimized_neon_contains(const char *haystack, int h_len, const SearchContext* ctx) {
+    // Direct access to context to avoid setup overhead
+    if (h_len < ctx->qlen) return 0;
 
-    uint8_t first = (uint8_t)tolower(needle[0]);
-    uint8x16_t v_first = vdupq_n_u8(first);
-    uint8x16_t v_case = vdupq_n_u8(0x20);
+    size_t n_len = ctx->qlen;
+    uint8x16_t v_lower = ctx->v_first_lower;
+    uint8x16_t v_upper = ctx->v_first_upper;
+    const char* needle = ctx->query;
+    uint8_t first = ctx->first_char_lower;
 
     size_t i = 0;
+    // Main SIMD loop
     for (; i + 16 <= h_len; i += 16) {
         uint8x16_t block = vld1q_u8((const uint8_t*)(haystack + i));
-        uint8x16_t block_lower = vorrq_u8(block, v_case);
-        uint8x16_t eq = vceqq_u8(v_first, block_lower);
+
+        // Compare against lower and upper case first char
+        uint8x16_t eq_l = vceqq_u8(block, v_lower);
+        uint8x16_t eq_u = vceqq_u8(block, v_upper);
+        uint8x16_t eq = vorrq_u8(eq_l, eq_u);
+
+        // Fast check if any bit is set in the 128-bit vector
         uint64x2_t fold = vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(eq)));
         if (vgetq_lane_u64(fold, 0) | vgetq_lane_u64(fold, 1)) {
             for (int k = 0; k < 16; k++) {
+                // Verify manually
                 if (tolower(haystack[i + k]) == first) {
                     if (strncasecmp(haystack + i + k, needle, n_len) == 0) return 1;
                 }
@@ -120,6 +135,7 @@ int neon_contains(const char *haystack, const char *needle, size_t n_len) {
         }
     }
 
+    // Cleanup loop
     for (; i < h_len; i++) {
         if (tolower(haystack[i]) == first) {
             if (strncasecmp(haystack + i, needle, n_len) == 0) return 1;
@@ -159,8 +175,8 @@ static int glob_match_ci(const char *text, const char *pattern) {
     return *p == '\0';
 }
 
-static inline int matches_query(const char *name, const char *query, size_t qlen, int glob_mode) {
-    return glob_mode ? glob_match_ci(name, query) : neon_contains(name, query, qlen);
+static inline int optimized_matches_query(const char *name, int name_len, const SearchContext* ctx) {
+    return ctx->glob_mode ? glob_match_ci(name, ctx->query) : optimized_neon_contains(name, name_len, ctx);
 }
 
 // ==========================================
@@ -183,8 +199,6 @@ static inline unsigned char fast_get_type(const char *name, int name_len) {
     if (*ext != '.') return TYPE_FILE;
     
     // ext now points to dot.
-    // Simple hash or switch on extension characters
-    // We can use a simplified check for known extensions
     
     char e1 = tolower(ext[1]);
     char e2 = tolower(ext[2]);
@@ -311,10 +325,6 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
     }
 
     // Temporary storage for sorting
-    // We'll allocate a large chunk on heap for pointers/structs
-    // Assuming max 10k files for now, or realloc if needed.
-    // For "unholy speed", we can use a fixed large buffer if memory allows, or realloc.
-    // Let's start with 4096 entries and realloc.
     size_t max_entries = 4096;
     size_t count = 0;
     GlaiveEntry* entries = (GlaiveEntry*)malloc(max_entries * sizeof(GlaiveEntry));
@@ -324,7 +334,7 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
         return -3;
     }
 
-    char kbuf[4096];
+    char kbuf[4096] __attribute__((aligned(8)));
     struct linux_dirent64 *d;
     struct stat st;
     int nread;
@@ -344,13 +354,11 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
             int64_t size = 0;
             int64_t time = 0;
 
-            // Determine type first to filter early
             if (d->d_type == DT_DIR) {
                 type = TYPE_DIR;
             } else if (d->d_type == DT_REG) {
                 type = fast_get_type(d->d_name, name_len);
             } else {
-                 // Fallback stat for unknown types
                  if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
                     if (S_ISDIR(st.st_mode)) type = TYPE_DIR;
                     else type = fast_get_type(d->d_name, name_len);
@@ -362,35 +370,25 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
             if (type == TYPE_UNKNOWN) type = fast_get_type(d->d_name, name_len);
             if (type == TYPE_UNKNOWN) type = TYPE_FILE;
 
-            // FILTERING
-            // If filterMask is set (not 0), and it's NOT a directory, check if bit is set.
-            // We assume filterMask bits correspond to TYPE_* values.
-            // Actually, usually mask is: 1<<TYPE_IMG | 1<<TYPE_VID etc.
-            // If filterMask is empty (0), show all.
-            // Always show directories.
             if (filterMask != 0 && type != TYPE_DIR) {
                 if (!((1 << type) & filterMask)) {
                     continue; // Skip
                 }
             }
 
-            // Get stats if needed (for sorting or display)
-            // We only stat if we need size/date OR if we haven't stat-ed yet.
-            // For now, we always stat for correctness of display.
             if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
                 size = st.st_size;
                 time = st.st_mtime;
             }
 
-            // Add to list
             if (count >= max_entries) {
                 max_entries *= 2;
                 GlaiveEntry* new_entries = (GlaiveEntry*)realloc(entries, max_entries * sizeof(GlaiveEntry));
-                if (!new_entries) break; // OOM
+                if (!new_entries) break;
                 entries = new_entries;
             }
 
-            entries[count].name = strdup(d->d_name); // We must copy name
+            entries[count].name = strdup(d->d_name);
             entries[count].name_len = name_len;
             entries[count].type = type;
             entries[count].size = size;
@@ -400,12 +398,10 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
     }
     close(fd);
 
-    // SORT
     g_sort_mode = sortMode;
     g_sort_asc = asc;
     qsort(entries, count, sizeof(GlaiveEntry), compare_entries);
 
-    // SERIALIZE
     unsigned char *head = buffer;
     unsigned char *end = buffer + capacity;
     
@@ -451,87 +447,95 @@ Java_com_mewmix_glaive_core_NativeCore_nativeCalculateDirectorySize(JNIEnv *env,
 // ==========================================
 // SEARCH PIPELINE
 // ==========================================
-void recursive_scan(char* path_buf, size_t current_len, size_t base_len, const char* query, size_t qlen, int glob_mode, 
-                   unsigned char** head_ptr, unsigned char* end, int filterMask) {
+void recursive_scan_optimized(char* path_buf, size_t current_len, size_t base_len,
+                              const SearchContext* ctx,
+                              unsigned char** head_ptr, unsigned char* end) {
     if (*head_ptr >= end) return;
 
-    DIR* dir = opendir(path_buf);
-    if (!dir) return;
+    int fd = open(path_buf, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd == -1) return;
 
-    struct dirent* d;
-    // No large stack allocation here!
+    // Use a stack buffer for getdents to avoid malloc
+    char kbuf[4096] __attribute__((aligned(8)));
+    struct linux_dirent64 *d;
+    int nread;
 
-    while ((d = readdir(dir)) != NULL) {
-        if (*head_ptr >= end) break;
-        if (d->d_name[0] == '.') continue;
+    while ((nread = syscall(__NR_getdents64, fd, kbuf, sizeof(kbuf))) > 0) {
+        int bpos = 0;
+        while (bpos < nread) {
+            if (*head_ptr >= end) break;
 
-        size_t name_len = strlen(d->d_name);
-        
-        if (d->d_type == DT_DIR) {
-            if (strcmp(d->d_name, "Android") != 0) {
-                // Check path length limit
-                if (current_len + 1 + name_len < 4096) {
-                    path_buf[current_len] = '/';
-                    memcpy(path_buf + current_len + 1, d->d_name, name_len + 1); // +1 for null
-                    
-                    recursive_scan(path_buf, current_len + 1 + name_len, base_len, query, qlen, glob_mode, head_ptr, end, filterMask);
-                    
-                    path_buf[current_len] = 0; // Restore for next iteration
-                }
+            d = (struct linux_dirent64 *)(kbuf + bpos);
+            bpos += d->d_reclen;
+
+            // Skip hidden files/dots
+            if (d->d_name[0] == '.') continue;
+
+            int name_len = 0;
+            while (d->d_name[name_len]) name_len++;
+
+            // Handle d_type for correctness
+            unsigned char type = DT_UNKNOWN;
+            if (d->d_type == DT_DIR) {
+                type = DT_DIR;
+            } else if (d->d_type == DT_REG) {
+                type = DT_REG;
+            } else {
+                // Fallback for unknown type
+                 struct stat st;
+                 if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+                     if (S_ISDIR(st.st_mode)) type = DT_DIR;
+                     else type = DT_REG;
+                 }
             }
-        } else {
-            if (matches_query(d->d_name, query, qlen, glob_mode)) {
-                
-                // Filter check
-                unsigned char type = fast_get_type(d->d_name, name_len);
-                if (filterMask != 0) {
-                    if (!((1 << type) & filterMask)) continue;
-                }
 
-                // We need to write the RELATIVE path so GlaiveCursor can reconstruct the full path.
-                // Construct full path in path_buf temporarily
-                if (current_len + 1 + name_len < 4096) {
-                    path_buf[current_len] = '/';
-                    memcpy(path_buf + current_len + 1, d->d_name, name_len + 1);
+            if (type == DT_DIR) {
+                if (strcmp(d->d_name, "Android") != 0) {
+                    if (current_len + 1 + name_len < 4096) {
+                        path_buf[current_len] = '/';
+                        memcpy(path_buf + current_len + 1, d->d_name, name_len + 1);
+
+                        recursive_scan_optimized(path_buf, current_len + 1 + name_len, base_len, ctx, head_ptr, end);
+
+                        path_buf[current_len] = 0;
+                    }
+                }
+            } else {
+                // It is a file (or treated as one)
+                if (optimized_matches_query(d->d_name, name_len, ctx)) {
                     
-                    // Relative path starts after base_len + 1 (for the slash)
-                    // If base_len is length of "/storage/emulated/0", relative starts at index base_len + 1
-                    char* rel_path = path_buf + base_len + 1;
-                    size_t rel_len = (current_len + 1 + name_len) - (base_len + 1);
-                    
-                    // Cap len at 255 for the protocol (or maybe we should allow longer? 
-                    // The protocol uses 1 byte for len, so 255 is hard limit for "name" field.
-                    // If relative path is > 255, we might truncate. 
-                    // Ideally we'd change protocol to support longer paths, but for now cap it.)
-                    int proto_len = (rel_len > 255) ? 255 : (int)rel_len;
-                    
-                    // Check buffer space
-                    if (*head_ptr + 2 + proto_len + 16 > end) {
-                        path_buf[current_len] = 0; // Restore
-                        break;
+                    unsigned char g_type = fast_get_type(d->d_name, name_len);
+                    if (ctx->filterMask != 0) {
+                        if (!((1 << g_type) & ctx->filterMask)) continue;
                     }
 
-                    // unsigned char type = fast_get_type(d->d_name, name_len); // Use actual name for type
-                    int64_t size = 0;
-                    int64_t time = 0;
+                    if (current_len + 1 + name_len < 4096) {
+                        path_buf[current_len] = '/';
+                        memcpy(path_buf + current_len + 1, d->d_name, name_len + 1);
 
-                    // SKIP STAT FOR SPEED
-                    
-                    *(*head_ptr)++ = type;
-                    *(*head_ptr)++ = (unsigned char)proto_len;
-                    memcpy(*head_ptr, rel_path, proto_len);
-                    *head_ptr += proto_len;
-                    memcpy(*head_ptr, &size, sizeof(int64_t));
-                    *head_ptr += sizeof(int64_t);
-                    memcpy(*head_ptr, &time, sizeof(int64_t));
-                    *head_ptr += sizeof(int64_t);
-                    
-                    path_buf[current_len] = 0; // Restore
+                        char* rel_path = path_buf + base_len + 1;
+                        size_t rel_len = (current_len + 1 + name_len) - (base_len + 1);
+
+                        int proto_len = (rel_len > 255) ? 255 : (int)rel_len;
+
+                        if (*head_ptr + 2 + proto_len + 16 <= end) {
+                            *(*head_ptr)++ = g_type;
+                            *(*head_ptr)++ = (unsigned char)proto_len;
+                            memcpy(*head_ptr, rel_path, proto_len);
+                            *head_ptr += proto_len;
+
+                            // Zero size/time for search results (lazy load or not needed)
+                            memset(*head_ptr, 0, 16);
+                            *head_ptr += 16;
+                        }
+
+                        path_buf[current_len] = 0;
+                    }
                 }
             }
         }
     }
-    closedir(dir);
+    close(fd);
 }
 
 JNIEXPORT jint JNICALL
@@ -548,27 +552,32 @@ Java_com_mewmix_glaive_core_NativeCore_nativeSearch(JNIEnv *env, jobject clazz, 
         return -2;
     }
 
-    size_t qlen = strlen(query);
-    int glob_mode = has_glob_tokens(query);
+    // Init Context
+    SearchContext ctx;
+    ctx.query = query;
+    ctx.qlen = strlen(query);
+    ctx.glob_mode = has_glob_tokens(query);
+    ctx.filterMask = filterMask;
+
+    // Precompute SIMD constants
+    ctx.first_char_lower = (uint8_t)tolower(query[0]);
+    ctx.v_first_lower = vdupq_n_u8(ctx.first_char_lower);
+    ctx.v_first_upper = vdupq_n_u8((uint8_t)toupper(query[0]));
 
     unsigned char *head = buffer;
     unsigned char *end = buffer + capacity;
 
-    // Use a single heap-allocated buffer for path construction
-    // Actually, instructions said "Move the path buffer to the stack or a reused thread_local static buffer"
-    // Stack 4096 is fine for this depth.
     char path_buf[4096];
     
     size_t root_len = strlen(root);
     if (root_len < 4096) {
         strcpy(path_buf, root);
-        // Remove trailing slash if present
         if (root_len > 1 && path_buf[root_len - 1] == '/') {
             path_buf[root_len - 1] = 0;
             root_len--;
         }
         
-        recursive_scan(path_buf, root_len, root_len, query, qlen, glob_mode, &head, end, filterMask);
+        recursive_scan_optimized(path_buf, root_len, root_len, &ctx, &head, end);
     }
 
     (*env)->ReleaseStringUTFChars(env, jRoot, root);
