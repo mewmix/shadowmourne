@@ -90,6 +90,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.LazyGridScope
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
@@ -345,7 +346,7 @@ fun GlaiveScreen() {
                                 rawList = items.filter { it.name.contains(searchQuery, ignoreCase = true) }
                             } else {
                                 delay(150)
-                                rawList = NativeCore.search(currentPath, searchQuery, getFilterMask(activeFilters))
+                                rawList = NativeCore.search(ROOT_PATH, searchQuery, getFilterMask(activeFilters))
                             }
                         }
                     }
@@ -386,7 +387,7 @@ fun GlaiveScreen() {
                                 secondaryRawList = items.filter { it.name.contains(secondarySearchQuery, ignoreCase = true) }
                             } else {
                                 delay(150)
-                                secondaryRawList = NativeCore.search(secondaryPath, secondarySearchQuery, getFilterMask(activeFilters))
+                                secondaryRawList = NativeCore.search(ROOT_PATH, secondarySearchQuery, getFilterMask(activeFilters))
                             }
                         }
                     }
@@ -573,7 +574,9 @@ fun GlaiveScreen() {
                                     onPaste = { handlePaste(0) },
                                     clipboardActive = clipboardItems.isNotEmpty(),
                                     directorySizes = directorySizes,
-                                    canMaximize = splitScopeEnabled && maximizedPane == -1
+                                    canMaximize = splitScopeEnabled && maximizedPane == -1,
+                                    isSearchMode = paneIsSearchActive(0) && paneSearchQuery(0).isNotEmpty(),
+                                    activePath = panePath(0)
                                 )
                             }
                             if (maximizedPane == -1) {
@@ -618,7 +621,9 @@ fun GlaiveScreen() {
                                     onPaste = { handlePaste(1) },
                                     clipboardActive = clipboardItems.isNotEmpty(),
                                     directorySizes = directorySizes,
-                                    canMaximize = splitScopeEnabled && maximizedPane == -1
+                                    canMaximize = splitScopeEnabled && maximizedPane == -1,
+                                    isSearchMode = paneIsSearchActive(1) && paneSearchQuery(1).isNotEmpty(),
+                                    activePath = panePath(1)
                                 )
                             }
                         }
@@ -639,7 +644,9 @@ fun GlaiveScreen() {
                         onPaste = { handlePaste(activePane) },
                         clipboardActive = clipboardItems.isNotEmpty(),
                         directorySizes = directorySizes,
-                        canMaximize = false
+                        canMaximize = false,
+                        isSearchMode = paneIsSearchActive(activePane) && paneSearchQuery(activePane).isNotEmpty(),
+                        activePath = panePath(activePane)
                     )
                 }
             }
@@ -1308,7 +1315,9 @@ fun PaneBrowser(
     onPaste: () -> Unit,
     clipboardActive: Boolean,
     directorySizes: Map<String, Long>,
-    canMaximize: Boolean = false
+    canMaximize: Boolean = false,
+    isSearchMode: Boolean = false,
+    activePath: String = ""
 ) {
     val theme = LocalGlaiveTheme.current
     var showMaximizeButton by remember { mutableStateOf(true) }
@@ -1336,7 +1345,82 @@ fun PaneBrowser(
             )
         }
     }) {
-        if (isGridView) {
+        // Helper to render items without duplication
+        fun androidx.compose.foundation.lazy.grid.LazyGridScope.renderItems(items: List<GlaiveItem>) {
+            items(items, key = { it.path }) { item ->
+                 if (isGridView) {
+                    FileGridItem(item = item, isSelected = selectedPaths.contains(item.path), onClick = { onItemClick(paneIndex, item) }, onLongClick = { onItemLongClick(paneIndex, item) })
+                 } else {
+                    FileCard(item = item, isSelected = selectedPaths.contains(item.path), sortMode = sortMode, onClick = { onItemClick(paneIndex, item) }, onLongClick = { onItemLongClick(paneIndex, item) }, directorySize = directorySizes[item.path])
+                 }
+            }
+        }
+
+        if (isSearchMode) {
+             val (local, system) = remember(displayedList, activePath) {
+                val searchRoot = if (activePath.endsWith("/")) activePath else "$activePath/"
+                displayedList.partition { it.path == activePath || it.path.startsWith(searchRoot) }
+            }
+            val (localDirs, localFiles) = remember(local) {
+                local.partition { it.type == GlaiveItem.TYPE_DIR }
+            }
+            val (systemDirs, systemFiles) = remember(system) {
+                system.partition { it.type == GlaiveItem.TYPE_DIR }
+            }
+
+            LazyVerticalGrid(
+                columns = if (isGridView) GridCells.Adaptive(minSize = 100.dp) else GridCells.Fixed(1),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 140.dp, top = 8.dp, start = 16.dp, end = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (localDirs.isNotEmpty() || localFiles.isNotEmpty()) {
+                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                        Text(
+                            text = "LOCAL RESULTS",
+                            style = TextStyle(color = theme.colors.accent, fontWeight = FontWeight.Bold, fontSize = 12.sp),
+                            modifier = Modifier.padding(vertical = 8.dp)
+                        )
+                    }
+                    if (localDirs.isNotEmpty()) {
+                        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                            Text("Folders", style = TextStyle(color = Color.Gray, fontSize = 10.sp), modifier = Modifier.padding(bottom = 4.dp))
+                        }
+                        renderItems(localDirs)
+                    }
+                    if (localFiles.isNotEmpty()) {
+                        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                            Text("Files", style = TextStyle(color = Color.Gray, fontSize = 10.sp), modifier = Modifier.padding(bottom = 4.dp))
+                        }
+                        renderItems(localFiles)
+                    }
+                }
+
+                if (systemDirs.isNotEmpty() || systemFiles.isNotEmpty()) {
+                     item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                        Text(
+                            text = "SYSTEM RESULTS",
+                            style = TextStyle(color = theme.colors.accent, fontWeight = FontWeight.Bold, fontSize = 12.sp),
+                            modifier = Modifier.padding(vertical = 8.dp).padding(top = 16.dp)
+                        )
+                    }
+                    if (systemDirs.isNotEmpty()) {
+                        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                            Text("Folders", style = TextStyle(color = Color.Gray, fontSize = 10.sp), modifier = Modifier.padding(bottom = 4.dp))
+                        }
+                        renderItems(systemDirs)
+                    }
+                    if (systemFiles.isNotEmpty()) {
+                        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                             Text("Files", style = TextStyle(color = Color.Gray, fontSize = 10.sp), modifier = Modifier.padding(bottom = 4.dp))
+                        }
+                        renderItems(systemFiles)
+                    }
+                }
+            }
+
+        } else if (isGridView) {
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(minSize = 100.dp),
                 modifier = Modifier.fillMaxSize(),
