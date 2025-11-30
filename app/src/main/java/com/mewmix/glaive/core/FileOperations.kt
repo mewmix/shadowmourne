@@ -1,5 +1,6 @@
 package com.mewmix.glaive.core
 
+import com.mewmix.glaive.data.GlaiveItem
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -11,6 +12,72 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 object FileOperations {
+
+    fun isArchive(path: String): Boolean {
+        return path.endsWith(".zip") ||
+               path.endsWith(".tar") ||
+               path.endsWith(".tar.zst") ||
+               path.endsWith(".tzst") ||
+               path.endsWith(".zst")
+    }
+
+    fun getArchiveRoot(path: String): String? {
+        val extensions = listOf(".tar.zst", ".tzst", ".zip", ".tar", ".zst")
+        for (ext in extensions) {
+            val index = path.indexOf(ext)
+            if (index != -1) {
+                val endOfExt = index + ext.length
+                if (endOfExt == path.length || path[endOfExt] == '/') {
+                    return path.substring(0, endOfExt)
+                }
+            }
+        }
+        return null
+    }
+
+    suspend fun listArchive(path: String, internalPath: String): List<GlaiveItem> {
+        if (path.endsWith(".zip")) {
+            return listZip(path, internalPath)
+        }
+        return ArchiveUtils.listArchive(path, internalPath)
+    }
+
+    suspend fun createArchive(files: List<File>, destFile: File): Boolean {
+        if (destFile.name.endsWith(".zip")) {
+            return zip(files, destFile)
+        }
+        return ArchiveUtils.createArchive(files, destFile)
+    }
+
+    suspend fun extractArchive(archiveFile: File, destDir: File, entryPaths: List<String>? = null): Boolean {
+        if (archiveFile.name.endsWith(".zip")) {
+            // For Zip, we default to full unzip if entryPaths is null.
+            // Partial unzip not implemented for Zip in this helper yet, but needed for consistency?
+            // ArchiveUtils implements partial.
+            // If entryPaths is set, we might need to implement partial zip extraction.
+            if (entryPaths != null) {
+                // TODO: Implement partial zip extraction if needed for preview
+                // For now, extract all is safer fallback or implement partial
+                return unzipPartial(archiveFile, destDir, entryPaths)
+            }
+            return unzip(archiveFile, destDir)
+        }
+        return ArchiveUtils.extractArchive(archiveFile, destDir, entryPaths)
+    }
+
+    suspend fun addToArchive(archiveFile: File, files: List<File>, parentPath: String): Boolean {
+        if (archiveFile.name.endsWith(".zip")) {
+            return addToZip(archiveFile, files, parentPath)
+        }
+        return ArchiveUtils.addToArchive(archiveFile, files, parentPath)
+    }
+
+    suspend fun removeFromArchive(archiveFile: File, entryPaths: List<String>): Boolean {
+        if (archiveFile.name.endsWith(".zip")) {
+            return removeFromZip(archiveFile, entryPaths)
+        }
+        return ArchiveUtils.removeFromArchive(archiveFile, entryPaths)
+    }
 
     suspend fun zip(files: List<File>, destZip: File): Boolean = withContext(Dispatchers.IO) {
         DebugLogger.logSuspend("Zipping ${files.size} files to ${destZip.path}") {
@@ -132,8 +199,8 @@ object FileOperations {
         }
     }
 
-    suspend fun listZip(zipPath: String, internalPath: String): List<com.mewmix.glaive.data.GlaiveItem> = withContext(Dispatchers.IO) {
-        val list = mutableListOf<com.mewmix.glaive.data.GlaiveItem>()
+    suspend fun listZip(zipPath: String, internalPath: String): List<GlaiveItem> = withContext(Dispatchers.IO) {
+        val list = mutableListOf<GlaiveItem>()
         try {
             java.util.zip.ZipFile(zipPath).use { zip ->
                 val entries = zip.entries()
@@ -152,10 +219,10 @@ object FileOperations {
                         
                         if (slashIndex == -1) {
                             // File in this directory
-                            list.add(com.mewmix.glaive.data.GlaiveItem(
+                            list.add(GlaiveItem(
                                 name = relative,
                                 path = "$zipPath/$name", // Virtual path
-                                type = if (entry.isDirectory) com.mewmix.glaive.data.GlaiveItem.TYPE_DIR else com.mewmix.glaive.data.GlaiveItem.TYPE_FILE,
+                                type = if (entry.isDirectory) GlaiveItem.TYPE_DIR else GlaiveItem.TYPE_FILE,
                                 size = entry.size,
                                 mtime = entry.time
                             ))
@@ -163,10 +230,10 @@ object FileOperations {
                             // Subdirectory
                             val dirName = relative.substring(0, slashIndex)
                             if (seenDirs.add(dirName)) {
-                                list.add(com.mewmix.glaive.data.GlaiveItem(
+                                list.add(GlaiveItem(
                                     name = dirName,
                                     path = "$zipPath/$prefix$dirName", // Virtual path
-                                    type = com.mewmix.glaive.data.GlaiveItem.TYPE_DIR,
+                                    type = GlaiveItem.TYPE_DIR,
                                     size = 0,
                                     mtime = 0
                                 ))
@@ -215,6 +282,45 @@ object FileOperations {
         }
     }
 
+    private suspend fun unzipPartial(zipFile: File, destDir: File, entryPaths: List<String>): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val targets = entryPaths.toSet()
+            java.util.zip.ZipFile(zipFile).use { zip ->
+                val entries = zip.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    // Check match
+                    var shouldExtract = false
+                    if (targets.contains(entry.name)) {
+                        shouldExtract = true
+                    } else if (targets.any { entry.name.startsWith("$it/") }) {
+                        shouldExtract = true
+                    }
+
+                    if (shouldExtract) {
+                        val entryFile = File(destDir, entry.name)
+                        if (!entryFile.canonicalPath.startsWith(destDir.canonicalPath)) continue
+
+                        if (entry.isDirectory) {
+                            entryFile.mkdirs()
+                        } else {
+                            entryFile.parentFile?.mkdirs()
+                            zip.getInputStream(entry).use { input ->
+                                FileOutputStream(entryFile).use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
     suspend fun addToZip(zipFile: File, files: List<File>, parentPathInZip: String = ""): Boolean = withContext(Dispatchers.IO) {
         val tempFile = File(zipFile.parent, "${zipFile.name}.tmp")
         try {
@@ -236,11 +342,6 @@ object FileOperations {
                 val prefix = if (parentPathInZip.isNotEmpty() && !parentPathInZip.endsWith("/")) "$parentPathInZip/" else parentPathInZip
                 files.forEach { file ->
                     if (file.isDirectory) {
-                        // For directories, we need to preserve structure relative to the file itself, but prefixed with parentPathInZip
-                        // This is tricky. Let's simplify: just add files flat or recursively?
-                        // If I paste a folder "foo" into "zip/bar/", I expect "bar/foo/..."
-                        // My zipDirectory helper uses basePath.
-                        // I need a modified zip helper that takes a prefix.
                         zipDirectoryWithPrefix(zos, file, file.parent, prefix)
                     } else {
                         zipFileWithPrefix(zos, file, file.parent, prefix)

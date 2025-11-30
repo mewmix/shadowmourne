@@ -194,18 +194,19 @@ fun GlaiveScreen() {
             DebugLogger.log("Pasting ${clipboardItems.size} items to pane $paneIndex") {
                 scope.launch {
                     val targetPath = panePath(paneIndex)
-                    if (targetPath.contains(".zip")) {
-                        val zipPath = targetPath.substringBefore(".zip") + ".zip"
-                        val internalPath = targetPath.substringAfter(".zip", "")
+                    val archiveRoot = FileOperations.getArchiveRoot(targetPath)
+
+                    if (archiveRoot != null) {
+                        val internalPath = targetPath.substring(archiveRoot.length)
                         val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
 
-                        FileOperations.addToZip(File(zipPath), clipboardItems, cleanInternal)
+                        FileOperations.addToArchive(File(archiveRoot), clipboardItems, cleanInternal)
 
                         // Refresh
                         if (paneIndex == 0) {
-                            rawList = FileOperations.listZip(zipPath, cleanInternal)
+                            rawList = FileOperations.listArchive(archiveRoot, cleanInternal)
                         } else {
-                            secondaryRawList = FileOperations.listZip(zipPath, cleanInternal)
+                            secondaryRawList = FileOperations.listArchive(archiveRoot, cleanInternal)
                         }
                     } else {
                         val dest = File(targetPath)
@@ -275,18 +276,26 @@ fun GlaiveScreen() {
                         rawList = FavoritesManager.getFavorites(context)
                     } else {
                         if (searchQuery.isEmpty()) {
-                            rawList = NativeCore.list(
-                                currentPath,
-                                getSortModeInt(sortMode),
-                                sortAscending,
-                                getFilterMask(activeFilters)
-                            )
-                        } else {
-                            if (currentPath.contains(".zip")) {
-                                val zipPath = currentPath.substringBefore(".zip") + ".zip"
-                                val internalPath = currentPath.substringAfter(".zip", "")
+                            val archiveRoot = FileOperations.getArchiveRoot(currentPath)
+                            if (archiveRoot != null) {
+                                val internalPath = currentPath.substring(archiveRoot.length)
                                 val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
-                                rawList = FileOperations.listZip(zipPath, cleanInternal)
+                                rawList = FileOperations.listArchive(archiveRoot, cleanInternal)
+                            } else {
+                                rawList = NativeCore.list(
+                                    currentPath,
+                                    getSortModeInt(sortMode),
+                                    sortAscending,
+                                    getFilterMask(activeFilters)
+                                )
+                            }
+                        } else {
+                            val archiveRoot = FileOperations.getArchiveRoot(currentPath)
+                            if (archiveRoot != null) {
+                                val internalPath = currentPath.substring(archiveRoot.length)
+                                val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
+                                val items = FileOperations.listArchive(archiveRoot, cleanInternal)
+                                rawList = items.filter { it.name.contains(searchQuery, ignoreCase = true) }
                             } else {
                                 delay(150)
                                 rawList = NativeCore.search(currentPath, searchQuery, getFilterMask(activeFilters))
@@ -308,18 +317,26 @@ fun GlaiveScreen() {
                         secondaryRawList = FavoritesManager.getFavorites(context)
                     } else {
                         if (secondarySearchQuery.isEmpty()) {
-                            secondaryRawList = NativeCore.list(
-                                secondaryPath,
-                                getSortModeInt(sortMode),
-                                sortAscending,
-                                getFilterMask(activeFilters)
-                            )
-                        } else {
-                            if (secondaryPath.contains(".zip")) {
-                                val zipPath = secondaryPath.substringBefore(".zip") + ".zip"
-                                val internalPath = secondaryPath.substringAfter(".zip", "")
+                            val archiveRoot = FileOperations.getArchiveRoot(secondaryPath)
+                            if (archiveRoot != null) {
+                                val internalPath = secondaryPath.substring(archiveRoot.length)
                                 val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
-                                secondaryRawList = FileOperations.listZip(zipPath, cleanInternal)
+                                secondaryRawList = FileOperations.listArchive(archiveRoot, cleanInternal)
+                            } else {
+                                secondaryRawList = NativeCore.list(
+                                    secondaryPath,
+                                    getSortModeInt(sortMode),
+                                    sortAscending,
+                                    getFilterMask(activeFilters)
+                                )
+                            }
+                        } else {
+                            val archiveRoot = FileOperations.getArchiveRoot(secondaryPath)
+                            if (archiveRoot != null) {
+                                val internalPath = secondaryPath.substring(archiveRoot.length)
+                                val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
+                                val items = FileOperations.listArchive(archiveRoot, cleanInternal)
+                                secondaryRawList = items.filter { it.name.contains(secondarySearchQuery, ignoreCase = true) }
                             } else {
                                 delay(150)
                                 secondaryRawList = NativeCore.search(secondaryPath, secondarySearchQuery, getFilterMask(activeFilters))
@@ -401,8 +418,9 @@ fun GlaiveScreen() {
                         if (it.startsWith(ROOT_PATH)) navigateTo(1, it)
                     }
                 } else if (activePanePath != ROOT_PATH) {
-                    if (activePanePath.contains(".zip") && !activePanePath.endsWith(".zip")) {
-                         // Inside zip, go up
+                    val archiveRoot = FileOperations.getArchiveRoot(activePanePath)
+                    if (archiveRoot != null && activePanePath != archiveRoot) {
+                         // Inside zip/tar, go up
                          val parent = activePanePath.substringBeforeLast("/")
                          navigateTo(activePane, parent)
                     } else {
@@ -427,7 +445,7 @@ fun GlaiveScreen() {
                     } else {
                         selectedPaths + item.path
                     }
-                } else if (item.type == GlaiveItem.TYPE_DIR || File(item.path).isDirectory || item.path.endsWith(".zip")) {
+                } else if (item.type == GlaiveItem.TYPE_DIR || File(item.path).isDirectory || FileOperations.isArchive(item.path)) {
                     if (paneCurrentTab(paneIndex) == 1) {
                         setPaneCurrentTab(paneIndex, 0)
                     }
@@ -669,19 +687,20 @@ fun GlaiveScreen() {
                     onDelete = {
                         scope.launch {
                             val path = contextMenuTarget!!.path
-                            if (path.contains(".zip")) {
-                                val zipPath = path.substringBefore(".zip") + ".zip"
-                                val internalPath = path.substringAfter(".zip", "")
+                            val archiveRoot = FileOperations.getArchiveRoot(path)
+
+                            if (archiveRoot != null) {
+                                val internalPath = path.substring(archiveRoot.length)
                                 val cleanInternal = if (internalPath.startsWith("/")) internalPath.substring(1) else internalPath
 
-                                FileOperations.removeFromZip(File(zipPath), listOf(cleanInternal))
+                                FileOperations.removeFromArchive(File(archiveRoot), listOf(cleanInternal))
 
                                 // Refresh
                                 val parentInternal = cleanInternal.substringBeforeLast("/", "")
                                 if (contextMenuPane == 0) {
-                                    rawList = FileOperations.listZip(zipPath, parentInternal)
+                                    rawList = FileOperations.listArchive(archiveRoot, parentInternal)
                                 } else {
-                                    secondaryRawList = FileOperations.listZip(zipPath, parentInternal)
+                                    secondaryRawList = FileOperations.listArchive(archiveRoot, parentInternal)
                                 }
                             } else {
                                 FileOperations.delete(File(path))
@@ -715,7 +734,24 @@ fun GlaiveScreen() {
                                 Toast.makeText(context, "Cannot zip a file into itself", Toast.LENGTH_SHORT).show()
                                 return@launch
                             }
-                            FileOperations.zip(listOf(targetFile), zipFile)
+                            FileOperations.createArchive(listOf(targetFile), zipFile)
+                            if (contextMenuPane == 0) {
+                                rawList = NativeCore.list(currentPath)
+                            } else {
+                                secondaryRawList = NativeCore.list(secondaryPath)
+                            }
+                            contextMenuTarget = null
+                        }
+                    },
+                    onCompressZstd = {
+                         scope.launch {
+                            val targetFile = File(contextMenuTarget!!.path)
+                            val zstFile = File(targetFile.parent, "${targetFile.name}.tar.zst")
+                            if (targetFile.canonicalPath == zstFile.canonicalPath) {
+                                Toast.makeText(context, "Cannot compress a file into itself", Toast.LENGTH_SHORT).show()
+                                return@launch
+                            }
+                            FileOperations.createArchive(listOf(targetFile), zstFile)
                             if (contextMenuPane == 0) {
                                 rawList = NativeCore.list(currentPath)
                             } else {
@@ -736,11 +772,11 @@ fun GlaiveScreen() {
                         }
                         contextMenuTarget = null
                     },
-                    onUnzip = {
+                    onExtract = {
                         scope.launch {
                             val targetFile = File(contextMenuTarget!!.path)
                             val destDir = targetFile.parentFile ?: targetFile
-                            FileOperations.unzip(targetFile, destDir)
+                            FileOperations.extractArchive(targetFile, destDir)
                             val updated = NativeCore.list(panePath(activePane))
                             if (activePane == 0) rawList = updated else secondaryRawList = updated
                             contextMenuTarget = null
@@ -784,22 +820,23 @@ fun GlaiveScreen() {
                     onDelete = {
                         scope.launch {
                             val firstPath = selectedPaths.firstOrNull()
-                            if (firstPath != null && firstPath.contains(".zip")) {
-                                 val zipPath = firstPath.substringBefore(".zip") + ".zip"
+                            val archiveRoot = if (firstPath != null) FileOperations.getArchiveRoot(firstPath) else null
+
+                            if (archiveRoot != null) {
                                  val internalPaths = selectedPaths.map {
-                                     val ip = it.substringAfter(".zip", "")
+                                     val ip = it.substring(archiveRoot.length)
                                      if (ip.startsWith("/")) ip.substring(1) else ip
                                  }
 
-                                 FileOperations.removeFromZip(File(zipPath), internalPaths)
+                                 FileOperations.removeFromArchive(File(archiveRoot), internalPaths)
 
                                  // Refresh
                                  val firstInternal = internalPaths.first()
                                  val parentInternal = firstInternal.substringBeforeLast("/", "")
                                  if (activePane == 0) {
-                                     rawList = FileOperations.listZip(zipPath, parentInternal)
+                                     rawList = FileOperations.listArchive(archiveRoot, parentInternal)
                                  } else {
-                                     secondaryRawList = FileOperations.listZip(zipPath, parentInternal)
+                                     secondaryRawList = FileOperations.listArchive(archiveRoot, parentInternal)
                                  }
                             } else {
                                 selectedPaths.forEach { FileOperations.delete(File(it)) }
@@ -817,7 +854,22 @@ fun GlaiveScreen() {
                                 val parent = files.first().parentFile
                                 val zipName = if (files.size == 1) "${files.first().name}.zip" else "archive_${System.currentTimeMillis()}.zip"
                                 val zipFile = File(parent, zipName)
-                                FileOperations.zip(files, zipFile)
+                                FileOperations.createArchive(files, zipFile)
+                                val updated = NativeCore.list(panePath(activePane))
+                                if (activePane == 0) rawList = updated else secondaryRawList = updated
+                            }
+                            selectedPaths = emptySet()
+                            showMultiSelectionMenu = false
+                        }
+                    },
+                    onCompressZstd = {
+                         scope.launch {
+                            val files = selectedPaths.map { File(it) }
+                            if (files.isNotEmpty()) {
+                                val parent = files.first().parentFile
+                                val name = if (files.size == 1) "${files.first().name}.tar.zst" else "archive_${System.currentTimeMillis()}.tar.zst"
+                                val destFile = File(parent, name)
+                                FileOperations.createArchive(files, destFile)
                                 val updated = NativeCore.list(panePath(activePane))
                                 if (activePane == 0) rawList = updated else secondaryRawList = updated
                             }
@@ -1681,7 +1733,8 @@ fun ContextMenuSheet(
     onShare: () -> Unit,
     onSelect: () -> Unit,
     onZip: () -> Unit,
-    onUnzip: () -> Unit,
+    onCompressZstd: () -> Unit,
+    onExtract: () -> Unit,
     onFavorite: (Boolean) -> Unit,
     isFavorite: Boolean,
     onOpenFileLocation: () -> Unit
@@ -1697,15 +1750,16 @@ fun ContextMenuSheet(
             ContextMenuItem("Select", Icons.Default.Check, onSelect)
             ContextMenuItem("Copy", Icons.Default.Share, onCopy)
             ContextMenuItem("Cut", Icons.Default.Edit, onCut)
-            ContextMenuItem("Zip", Icons.Default.Archive, onZip)
-            if (item.path.endsWith(".zip")) {
-                 ContextMenuItem("Unzip Here", Icons.Default.Archive, onUnzip)
+            ContextMenuItem("Compress (Zip)", Icons.Default.Archive, onZip)
+            ContextMenuItem("Compress (.tar.zst)", Icons.Default.Archive, onCompressZstd)
+            if (FileOperations.isArchive(item.path)) {
+                 ContextMenuItem("Extract Here", Icons.Default.Archive, onExtract)
             }
             ContextMenuItem("Copy Path", Icons.Default.ContentPaste, {
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                 val clip = android.content.ClipData.newPlainText("Path", item.path)
                 clipboard.setPrimaryClip(clip)
-                onDismiss() // Dismiss menu after copy
+                onDismiss()
             })
             ContextMenuItem("Delete", Icons.Default.Delete, onDelete, theme.colors.error)
             if (item.type != GlaiveItem.TYPE_DIR) {
@@ -1882,6 +1936,7 @@ fun MultiSelectionMenuSheet(
     onCut: () -> Unit,
     onDelete: () -> Unit,
     onZip: () -> Unit,
+    onCompressZstd: () -> Unit,
     onCopyPath: () -> Unit
 ) {
     val theme = LocalGlaiveTheme.current
@@ -1891,7 +1946,8 @@ fun MultiSelectionMenuSheet(
             Spacer(modifier = Modifier.height(16.dp))
             ContextMenuItem("Copy", Icons.Default.Share, onCopy)
             ContextMenuItem("Cut", Icons.Default.Edit, onCut)
-            ContextMenuItem("Zip", Icons.Default.Archive, onZip)
+            ContextMenuItem("Compress (Zip)", Icons.Default.Archive, onZip)
+            ContextMenuItem("Compress (.tar.zst)", Icons.Default.Archive, onCompressZstd)
             ContextMenuItem("Copy Path", Icons.Default.ContentPaste, onCopyPath)
             ContextMenuItem("Delete", Icons.Default.Delete, onDelete, theme.colors.error)
         }
@@ -1988,7 +2044,6 @@ private fun getSmartMimeType(path: String): String {
     return "*/*"
 }
 
-// Simple IconButton replacement if Material3 not available
 @Composable
 fun IconButton(onClick: () -> Unit, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Box(
