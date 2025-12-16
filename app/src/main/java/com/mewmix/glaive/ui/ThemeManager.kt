@@ -66,6 +66,24 @@ object ThemeManager {
     private const val KEY_ERROR = "color_error"
     private const val KEY_RADIUS = "shape_radius"
     private const val KEY_BORDER = "shape_border"
+    private const val KEY_SHOW_HIDDEN = "show_hidden"
+    private const val KEY_SHOW_APP_DATA = "show_app_data"
+
+    fun loadShowHidden(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_SHOW_HIDDEN, true)
+    }
+
+    fun saveShowHidden(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putBoolean(KEY_SHOW_HIDDEN, value).apply()
+    }
+
+    fun loadShowAppData(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_SHOW_APP_DATA, false)
+    }
+
+    fun saveShowAppData(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putBoolean(KEY_SHOW_APP_DATA, value).apply()
+    }
 
     fun loadTheme(context: Context): ThemeConfig {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

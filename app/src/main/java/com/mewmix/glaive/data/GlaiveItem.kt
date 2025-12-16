@@ -18,5 +18,8 @@ data class GlaiveItem(
         const val TYPE_APK = 4
         const val TYPE_DOC = 5
         const val TYPE_FILE = 6
+        const val TYPE_AUDIO = 7
+        const val TYPE_ARCHIVE = 8
+        const val TYPE_CODE = 9
     }
 }

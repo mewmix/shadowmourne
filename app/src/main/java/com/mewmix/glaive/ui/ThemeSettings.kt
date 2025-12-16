@@ -36,8 +36,10 @@ import java.util.Locale
 @Composable
 fun ThemeSettingsDialog(
     currentTheme: ThemeConfig,
+    showHiddenFiles: Boolean,
+    showAppData: Boolean,
     onDismiss: () -> Unit,
-    onApply: (ThemeConfig) -> Unit,
+    onApply: (ThemeConfig, Boolean, Boolean) -> Unit,
     onReset: () -> Unit
 ) {
     val context = LocalContext.current
@@ -48,6 +50,9 @@ fun ThemeSettingsDialog(
 
     var cornerRadius by remember { mutableStateOf(currentTheme.shapes.cornerRadius.value) }
     var borderWidth by remember { mutableStateOf(currentTheme.shapes.borderWidth.value) }
+
+    var hiddenFiles by remember { mutableStateOf(showHiddenFiles) }
+    var appData by remember { mutableStateOf(showAppData) }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -62,7 +67,7 @@ fun ThemeSettingsDialog(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Text(
-                    "Theme Settings",
+                    "Settings",
                     style = MaterialTheme.typography.titleLarge,
                     color = currentTheme.colors.text
                 )
@@ -85,6 +90,51 @@ fun ThemeSettingsDialog(
                         Spacer(modifier = Modifier.height(8.dp))
                         SliderRow("Corner Radius", cornerRadius, 0f, 32f) { cornerRadius = it }
                         SliderRow("Border Width", borderWidth, 0f, 5f) { borderWidth = it }
+                    }
+
+                    item {
+                        Text("Filesystem", color = currentTheme.colors.accent, style = MaterialTheme.typography.titleMedium)
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column {
+                                Text("Show Hidden Files", color = currentTheme.colors.text)
+                                Text("Dotfiles (e.g. .git)", color = Color.Gray, fontSize = 12.sp)
+                            }
+                            Switch(
+                                checked = hiddenFiles,
+                                onCheckedChange = { hiddenFiles = it },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = currentTheme.colors.accent,
+                                    checkedTrackColor = currentTheme.colors.accent.copy(alpha = 0.5f)
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column {
+                                Text("Include App Data", color = currentTheme.colors.text)
+                                Text("Search inside Android/data", color = Color.Gray, fontSize = 12.sp)
+                            }
+                            Switch(
+                                checked = appData,
+                                onCheckedChange = { appData = it },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = currentTheme.colors.accent,
+                                    checkedTrackColor = currentTheme.colors.accent.copy(alpha = 0.5f)
+                                )
+                            )
+                        }
                     }
 
                     item {
@@ -164,14 +214,15 @@ fun ThemeSettingsDialog(
                         Text("Cancel", color = currentTheme.colors.accent)
                     }
                     Spacer(modifier = Modifier.width(8.dp))
-                    // Requirement: Apply text must be BLACK
                     Button(
                         onClick = {
                             onApply(
                                 ThemeConfig(
                                     colors = GlaiveColors(background, surface, text, accent, currentTheme.colors.error),
                                     shapes = GlaiveShapes(cornerRadius.dp, borderWidth.dp)
-                                )
+                                ),
+                                hiddenFiles,
+                                appData
                             )
                         },
                         colors = ButtonDefaults.buttonColors(
@@ -209,7 +260,6 @@ fun ColorPickerRow(label: String, color: Color, onColorChange: (Color) -> Unit) 
                     modifier = Modifier.padding(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // Scrollable content area
                     Column(
                         modifier = Modifier
                             .weight(1f, fill = true)
@@ -228,7 +278,6 @@ fun ColorPickerRow(label: String, color: Color, onColorChange: (Color) -> Unit) 
                         Spacer(modifier = Modifier.height(16.dp))
                     }
 
-                    // Fixed action row
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End
@@ -285,7 +334,6 @@ fun ColorPickerRow(label: String, color: Color, onColorChange: (Color) -> Unit) 
                             onColorChange(parsedColor)
                         }
                     } catch (e: Exception) {
-                        // Ignore invalid
                     }
                 },
                 textStyle = TextStyle(color = Color.White, fontFamily = FontFamily.Monospace),
