@@ -15,17 +15,17 @@ object NativeCore {
         ByteBuffer.allocateDirect(4 * 1024 * 1024).order(ByteOrder.LITTLE_ENDIAN)
     private val bufferLock = Any()
 
-    private external fun nativeFillBuffer(path: String, buffer: ByteBuffer, capacity: Int, sortMode: Int, asc: Boolean, filterMask: Int): Int
-    private external fun nativeSearch(root: String, query: String, buffer: ByteBuffer, capacity: Int, filterMask: Int): Int
+    private external fun nativeFillBuffer(path: String, buffer: ByteBuffer, capacity: Int, sortMode: Int, asc: Boolean, filterMask: Int, showHidden: Boolean): Int
+    private external fun nativeSearch(root: String, query: String, buffer: ByteBuffer, capacity: Int, filterMask: Int, showHidden: Boolean, showAppData: Boolean): Int
     private external fun nativeCalculateDirectorySize(path: String): Long
 
     suspend fun calculateDirectorySize(path: String): Long = withContext(Dispatchers.IO) {
         nativeCalculateDirectorySize(path)
     }
 
-    suspend fun list(currentPath: String, sortMode: Int = 0, asc: Boolean = true, filterMask: Int = 0): List<GlaiveItem> = withContext(Dispatchers.IO) {
+    suspend fun list(currentPath: String, sortMode: Int = 0, asc: Boolean = true, filterMask: Int = 0, showHidden: Boolean = false): List<GlaiveItem> = withContext(Dispatchers.IO) {
         synchronized(bufferLock) {
-            val filledBytes = nativeFillBuffer(currentPath, sharedBuffer, sharedBuffer.capacity(), sortMode, asc, filterMask)
+            val filledBytes = nativeFillBuffer(currentPath, sharedBuffer, sharedBuffer.capacity(), sortMode, asc, filterMask, showHidden)
             if (filledBytes <= 0) {
                 emptyList()
             } else {
@@ -40,9 +40,9 @@ object NativeCore {
         }
     }
 
-    suspend fun search(root: String, query: String, filterMask: Int = 0): List<GlaiveItem> = withContext(Dispatchers.IO) {
+    suspend fun search(root: String, query: String, filterMask: Int = 0, showHidden: Boolean = false, showAppData: Boolean = false): List<GlaiveItem> = withContext(Dispatchers.IO) {
         synchronized(bufferLock) {
-            val filledBytes = nativeSearch(root, query, sharedBuffer, sharedBuffer.capacity(), filterMask)
+            val filledBytes = nativeSearch(root, query, sharedBuffer, sharedBuffer.capacity(), filterMask, showHidden, showAppData)
             if (filledBytes <= 0) {
                 emptyList()
             } else {

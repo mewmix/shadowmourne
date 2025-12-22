@@ -36,11 +36,15 @@ import java.util.Locale
 @Composable
 fun ThemeSettingsDialog(
     currentTheme: ThemeConfig,
+    showHidden: Boolean,
+    showAppData: Boolean,
     onDismiss: () -> Unit,
-    onApply: (ThemeConfig) -> Unit,
+    onApply: (ThemeConfig, Boolean, Boolean) -> Unit,
     onReset: () -> Unit
 ) {
     val context = LocalContext.current
+    var tempShowHidden by remember { mutableStateOf(showHidden) }
+    var tempShowAppData by remember { mutableStateOf(showAppData) }
     var background by remember { mutableStateOf(currentTheme.colors.background) }
     var surface by remember { mutableStateOf(currentTheme.colors.surface) }
     var text by remember { mutableStateOf(currentTheme.colors.text) }
@@ -85,6 +89,43 @@ fun ThemeSettingsDialog(
                         Spacer(modifier = Modifier.height(8.dp))
                         SliderRow("Corner Radius", cornerRadius, 0f, 32f) { cornerRadius = it }
                         SliderRow("Border Width", borderWidth, 0f, 5f) { borderWidth = it }
+                    }
+
+                    item {
+                        Text("File System", color = currentTheme.colors.accent, style = MaterialTheme.typography.titleMedium)
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Show Hidden Files", color = currentTheme.colors.text)
+                            Switch(
+                                checked = tempShowHidden,
+                                onCheckedChange = { tempShowHidden = it },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = currentTheme.colors.accent,
+                                    checkedTrackColor = currentTheme.colors.accent.copy(alpha = 0.5f)
+                                )
+                            )
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Show System App Data", color = currentTheme.colors.text)
+                            Switch(
+                                checked = tempShowAppData,
+                                onCheckedChange = { tempShowAppData = it },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = currentTheme.colors.accent,
+                                    checkedTrackColor = currentTheme.colors.accent.copy(alpha = 0.5f)
+                                )
+                            )
+                        }
                     }
 
                     item {
@@ -171,7 +212,9 @@ fun ThemeSettingsDialog(
                                 ThemeConfig(
                                     colors = GlaiveColors(background, surface, text, accent, currentTheme.colors.error),
                                     shapes = GlaiveShapes(cornerRadius.dp, borderWidth.dp)
-                                )
+                                ),
+                                tempShowHidden,
+                                tempShowAppData
                             )
                         },
                         colors = ButtonDefaults.buttonColors(
