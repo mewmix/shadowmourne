@@ -136,6 +136,10 @@ fun GlaiveScreen() {
         val theme = LocalGlaiveTheme.current
 
         // State
+        val prefs = remember { context.getSharedPreferences("glaive_settings", Context.MODE_PRIVATE) }
+        var showHidden by remember { mutableStateOf(prefs.getBoolean("pref_show_hidden", false)) }
+        var showAppData by remember { mutableStateOf(prefs.getBoolean("pref_show_app_data", false)) }
+
         var currentPath by remember { mutableStateOf(ROOT_PATH) }
         var rawList by remember { mutableStateOf<List<GlaiveItem>>(emptyList()) }
         var secondaryPath by remember { mutableStateOf(ROOT_PATH) }
@@ -322,7 +326,7 @@ fun GlaiveScreen() {
         }
 
         // Load Data / Search with Debounce
-        LaunchedEffect(currentPath, searchQuery, currentTab, sortMode, sortAscending, activeFilters) {
+        LaunchedEffect(currentPath, searchQuery, currentTab, sortMode, sortAscending, activeFilters, showHidden, showAppData) {
             DebugLogger.logSuspend("Loading data for path: $currentPath") {
                 isSearching = true
                 try {
@@ -353,7 +357,8 @@ fun GlaiveScreen() {
                                     currentPath,
                                     getSortModeInt(sortMode),
                                     sortAscending,
-                                    getFilterMask(activeFilters)
+                                    getFilterMask(activeFilters),
+                                    showHidden
                                 )
                             }
                         } else {
@@ -365,7 +370,7 @@ fun GlaiveScreen() {
                                 rawList = items.filter { it.name.contains(searchQuery, ignoreCase = true) }
                             } else {
                                 delay(150)
-                                rawList = NativeCore.search(ROOT_PATH, searchQuery, getFilterMask(activeFilters))
+                                rawList = NativeCore.search(ROOT_PATH, searchQuery, getFilterMask(activeFilters), showHidden, showAppData)
                             }
                         }
                     }
@@ -375,7 +380,7 @@ fun GlaiveScreen() {
             }
         }
 
-        LaunchedEffect(secondaryPath, secondarySearchQuery, secondaryCurrentTab, sortMode, sortAscending, activeFilters, splitScopeEnabled) {
+        LaunchedEffect(secondaryPath, secondarySearchQuery, secondaryCurrentTab, sortMode, sortAscending, activeFilters, splitScopeEnabled, showHidden, showAppData) {
             if (!splitScopeEnabled) return@LaunchedEffect
             DebugLogger.logSuspend("Loading data for secondary path: $secondaryPath") {
                 secondaryIsSearching = true
@@ -407,7 +412,8 @@ fun GlaiveScreen() {
                                     secondaryPath,
                                     getSortModeInt(sortMode),
                                     sortAscending,
-                                    getFilterMask(activeFilters)
+                                    getFilterMask(activeFilters),
+                                    showHidden
                                 )
                             }
                         } else {
@@ -419,7 +425,7 @@ fun GlaiveScreen() {
                                 secondaryRawList = items.filter { it.name.contains(secondarySearchQuery, ignoreCase = true) }
                             } else {
                                 delay(150)
-                                secondaryRawList = NativeCore.search(ROOT_PATH, secondarySearchQuery, getFilterMask(activeFilters))
+                                secondaryRawList = NativeCore.search(ROOT_PATH, secondarySearchQuery, getFilterMask(activeFilters), showHidden, showAppData)
                             }
                         }
                     }
@@ -1023,10 +1029,15 @@ fun GlaiveScreen() {
             if (showThemeSettings) {
                 ThemeSettingsDialog(
                     currentTheme = themeConfig,
+                    showHidden = showHidden,
+                    showAppData = showAppData,
                     onDismiss = { showThemeSettings = false },
-                    onApply = { newConfig ->
+                    onApply = { newConfig, newShowHidden, newShowAppData ->
                         themeConfig = newConfig
+                        showHidden = newShowHidden
+                        showAppData = newShowAppData
                         ThemeManager.saveTheme(context, newConfig)
+                        prefs.edit().putBoolean("pref_show_hidden", newShowHidden).putBoolean("pref_show_app_data", newShowAppData).apply()
                         showThemeSettings = false
                     },
                     onReset = {
@@ -2176,7 +2187,7 @@ fun FilterBar(
     ) {
         item { FilterChip("Images", GlaiveItem.TYPE_IMG, activeFilters, onFilterToggle) }
         item { FilterChip("Videos", GlaiveItem.TYPE_VID, activeFilters, onFilterToggle) }
-        item { FilterChip("Audio", 0, activeFilters, onFilterToggle, enabled = false) } // Placeholder
+        item { FilterChip("Audio", GlaiveItem.TYPE_AUDIO, activeFilters, onFilterToggle) }
         item { FilterChip("Docs", GlaiveItem.TYPE_DOC, activeFilters, onFilterToggle) }
         item { FilterChip("APKs", GlaiveItem.TYPE_APK, activeFilters, onFilterToggle) }
     }
@@ -2356,6 +2367,7 @@ fun getTypeColor(type: Int): Color {
         GlaiveItem.TYPE_DIR -> theme.colors.accent
         GlaiveItem.TYPE_IMG -> Color(0xFF2979FF)
         GlaiveItem.TYPE_VID -> theme.colors.error
+        GlaiveItem.TYPE_AUDIO -> Color(0xFFFF9100)
         GlaiveItem.TYPE_APK -> Color(0xFFB2FF59)
         else -> Color.Gray
     }
@@ -2365,6 +2377,7 @@ fun getTypeIcon(type: Int): String = when (type) {
     GlaiveItem.TYPE_DIR -> "📁"
     GlaiveItem.TYPE_IMG -> "🖼️"
     GlaiveItem.TYPE_VID -> "🎬"
+    GlaiveItem.TYPE_AUDIO -> "🎵"
     GlaiveItem.TYPE_APK -> "🤖"
     GlaiveItem.TYPE_DOC -> "📄"
     else -> "📝"
@@ -2463,6 +2476,7 @@ private fun openFile(context: Context, item: GlaiveItem) {
 private fun mimeFor(item: GlaiveItem): String = when (item.type) {
     GlaiveItem.TYPE_IMG -> "image/*"
     GlaiveItem.TYPE_VID -> "video/*"
+    GlaiveItem.TYPE_AUDIO -> "audio/*"
     GlaiveItem.TYPE_APK -> "application/vnd.android.package-archive"
     GlaiveItem.TYPE_DOC -> "application/pdf"
     else -> "*/*"

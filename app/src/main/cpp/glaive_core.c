@@ -35,7 +35,8 @@ typedef enum {
     TYPE_VID = 3,
     TYPE_APK = 4,
     TYPE_DOC = 5,
-    TYPE_FILE = 6
+    TYPE_FILE = 6,
+    TYPE_AUDIO = 7
 } FileType;
 
 // ==========================================
@@ -49,6 +50,8 @@ typedef struct {
     uint8x16_t v_first_lower;
     uint8x16_t v_first_upper;
     int filterMask;
+    uint8_t show_hidden;
+    uint8_t show_app_data;
 } SearchContext;
 
 int64_t calculate_dir_size_recursive(int parent_fd, const char *path) {
@@ -216,17 +219,28 @@ static inline unsigned char fast_get_type(const char *name, int name_len) {
     }
     if (e1 == 'm') {
         if (e2 == 'p' && e3 == '4') return TYPE_VID; // mp4
+        if (e2 == 'p' && e3 == '3') return TYPE_AUDIO; // mp3
         if (e2 == 'k' && e3 == 'v') return TYPE_VID; // mkv
         if (e2 == 'o' && e3 == 'v') return TYPE_VID; // mov
+        if (e2 == '4' && e3 == 'a') return TYPE_AUDIO; // m4a
     }
     if (e1 == 'a') {
         if (e2 == 'p' && e3 == 'k') return TYPE_APK; // apk
         if (e2 == 'v' && e3 == 'i') return TYPE_VID; // avi
+        if (e2 == 'a' && e3 == 'c') return TYPE_AUDIO; // aac
+    }
+    if (e1 == 'f') {
+        if (e2 == 'l' && e3 == 'a' && e4 == 'c') return TYPE_AUDIO; // flac
     }
     if (e1 == 'g') {
         if (e2 == 'i' && e3 == 'f') return TYPE_IMG; // gif
     }
+    if (e1 == 'o') {
+        if (e2 == 'g' && e3 == 'g') return TYPE_AUDIO; // ogg
+        if (e2 == 'p' && e3 == 'u' && e4 == 's') return TYPE_AUDIO; // opus
+    }
     if (e1 == 'w') {
+        if (e2 == 'a' && e3 == 'v') return TYPE_AUDIO; // wav
         if (e2 == 'e' && e3 == 'b') {
             if (e4 == 'p') return TYPE_IMG; // webp
             if (e4 == 'm') return TYPE_VID; // webm
@@ -308,7 +322,7 @@ int compare_entries(const void* a, const void* b) {
 }
 
 JNIEXPORT jint JNICALL
-Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject clazz, jstring jPath, jobject jBuffer, jint capacity, jint sortMode, jboolean asc, jint filterMask) {
+Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject clazz, jstring jPath, jobject jBuffer, jint capacity, jint sortMode, jboolean asc, jint filterMask, jboolean showHidden) {
     if (capacity <= 0) return 0;
 
     const char *path = (*env)->GetStringUTFChars(env, jPath, NULL);
@@ -345,7 +359,11 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
             d = (struct linux_dirent64 *)(kbuf + bpos);
             bpos += d->d_reclen;
 
-            if (d->d_name[0] == '.') continue;
+            if (d->d_name[0] == '.') {
+                if (d->d_name[1] == '\0') continue;
+                if (d->d_name[1] == '.' && d->d_name[2] == '\0') continue;
+                if (!showHidden) continue;
+            }
 
             int name_len = 0;
             while (d->d_name[name_len] && name_len < 255) name_len++;
@@ -469,7 +487,11 @@ void recursive_scan_optimized(char* path_buf, size_t current_len, size_t base_le
             bpos += d->d_reclen;
 
             // Skip hidden files/dots
-            if (d->d_name[0] == '.') continue;
+            if (d->d_name[0] == '.') {
+                if (d->d_name[1] == '\0') continue;
+                if (d->d_name[1] == '.' && d->d_name[2] == '\0') continue;
+                if (!ctx->show_hidden) continue;
+            }
 
             int name_len = 0;
             while (d->d_name[name_len]) name_len++;
@@ -490,7 +512,7 @@ void recursive_scan_optimized(char* path_buf, size_t current_len, size_t base_le
             }
 
             if (type == DT_DIR) {
-                if (strcmp(d->d_name, "Android") != 0) {
+                if (ctx->show_app_data || strcmp(d->d_name, "Android") != 0) {
                     if (current_len + 1 + name_len < 4096) {
                         path_buf[current_len] = '/';
                         memcpy(path_buf + current_len + 1, d->d_name, name_len + 1);
@@ -539,7 +561,7 @@ void recursive_scan_optimized(char* path_buf, size_t current_len, size_t base_le
 }
 
 JNIEXPORT jint JNICALL
-Java_com_mewmix_glaive_core_NativeCore_nativeSearch(JNIEnv *env, jobject clazz, jstring jRoot, jstring jQuery, jobject jBuffer, jint capacity, jint filterMask) {
+Java_com_mewmix_glaive_core_NativeCore_nativeSearch(JNIEnv *env, jobject clazz, jstring jRoot, jstring jQuery, jobject jBuffer, jint capacity, jint filterMask, jboolean showHidden, jboolean showAppData) {
     if (capacity <= 0) return 0;
 
     const char *root = (*env)->GetStringUTFChars(env, jRoot, NULL);
@@ -558,6 +580,8 @@ Java_com_mewmix_glaive_core_NativeCore_nativeSearch(JNIEnv *env, jobject clazz, 
     ctx.qlen = strlen(query);
     ctx.glob_mode = has_glob_tokens(query);
     ctx.filterMask = filterMask;
+    ctx.show_hidden = (uint8_t)showHidden;
+    ctx.show_app_data = (uint8_t)showAppData;
 
     // Precompute SIMD constants
     ctx.first_char_lower = (uint8_t)tolower(query[0]);
