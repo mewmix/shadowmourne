@@ -25,6 +25,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.draganddrop.dragAndDropSource
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -69,6 +72,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.DragAndDropTransferData
+import androidx.compose.ui.draganddrop.mimeTypes
+import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -107,6 +115,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import android.content.ClipData
+import android.view.View
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
@@ -193,6 +203,27 @@ fun GlaiveScreen() {
                     block()
                 } finally {
                     blockingMessage = null
+                }
+            }
+        }
+
+        fun handleDrop(event: DragAndDropEvent, targetPaneIndex: Int) {
+            val clipData = event.toAndroidDragEvent().clipData ?: return
+            if (clipData.itemCount > 0) {
+                val droppedPaths = mutableListOf<String>()
+                for (i in 0 until clipData.itemCount) {
+                    val item = clipData.getItemAt(i)
+                    if (item.text != null) {
+                        droppedPaths.add(item.text.toString())
+                    }
+                }
+
+                if (droppedPaths.isNotEmpty()) {
+                    // Default behavior for Drag & Drop is Copy
+                    clipboardItems = droppedPaths.map { File(it) }
+                    isCutOperation = false
+                    handlePaste(targetPaneIndex)
+                    Toast.makeText(context, "Copied ${droppedPaths.size} items", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -612,7 +643,8 @@ fun GlaiveScreen() {
                                     directorySizes = directorySizes,
                                     canMaximize = splitScopeEnabled && maximizedPane == -1,
                                     isSearchMode = paneIsSearchActive(0) && paneSearchQuery(0).isNotEmpty(),
-                                    activePath = panePath(0)
+                                    activePath = panePath(0),
+                                    onDrop = { event -> handleDrop(event, 0) }
                                 )
                             }
                             if (maximizedPane == -1) {
@@ -659,7 +691,8 @@ fun GlaiveScreen() {
                                     directorySizes = directorySizes,
                                     canMaximize = splitScopeEnabled && maximizedPane == -1,
                                     isSearchMode = paneIsSearchActive(1) && paneSearchQuery(1).isNotEmpty(),
-                                    activePath = panePath(1)
+                                    activePath = panePath(1),
+                                    onDrop = { event -> handleDrop(event, 1) }
                                 )
                             }
                         }
@@ -682,7 +715,8 @@ fun GlaiveScreen() {
                         directorySizes = directorySizes,
                         canMaximize = false,
                         isSearchMode = paneIsSearchActive(activePane) && paneSearchQuery(activePane).isNotEmpty(),
-                        activePath = panePath(activePane)
+                        activePath = panePath(activePane),
+                        onDrop = { event -> handleDrop(event, activePane) }
                     )
                 }
             }
@@ -1399,6 +1433,7 @@ fun BreadcrumbStrip(currentPath: String, onPathJump: (String) -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PaneBrowser(
     paneIndex: Int,
@@ -1415,7 +1450,8 @@ fun PaneBrowser(
     directorySizes: Map<String, Long>,
     canMaximize: Boolean = false,
     isSearchMode: Boolean = false,
-    activePath: String = ""
+    activePath: String = "",
+    onDrop: (DragAndDropEvent) -> Unit
 ) {
     val theme = LocalGlaiveTheme.current
     var showMaximizeButton by remember { mutableStateOf(true) }
@@ -1427,29 +1463,78 @@ fun PaneBrowser(
         }
     }
 
-    Box(modifier = modifier.pointerInput(clipboardActive) {
-        awaitPointerEventScope {
-            while (true) {
-                val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
-                if (event.changes.any { it.pressed }) {
-                    showMaximizeButton = true
-                }
+    val dragTargetModifier = Modifier.dragAndDropTarget(
+        shouldStartDragAndDrop = { event ->
+            event.mimeTypes().contains(android.content.ClipDescription.MIMETYPE_TEXT_PLAIN)
+        },
+        target = object : DragAndDropTarget {
+            override fun onDrop(event: DragAndDropEvent): Boolean {
+                onDrop(event)
+                return true
             }
         }
-    }.pointerInput(clipboardActive) {
-        if (clipboardActive) {
-            detectTapGestures(
-                onTap = { onPaste() }
-            )
-        }
-    }) {
+    )
+
+    Box(modifier = modifier
+        .then(dragTargetModifier)
+        .pointerInput(clipboardActive) {
+            awaitPointerEventScope {
+                while (true) {
+                    val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                    if (event.changes.any { it.pressed }) {
+                        showMaximizeButton = true
+                    }
+                }
+            }
+        }.pointerInput(clipboardActive) {
+            if (clipboardActive) {
+                detectTapGestures(
+                    onTap = { onPaste() }
+                )
+            }
+        }) {
         // Helper to render items without duplication
         fun androidx.compose.foundation.lazy.grid.LazyGridScope.renderItems(items: List<GlaiveItem>) {
             items(items, key = { it.path }) { item ->
+                val dragModifier = Modifier.dragAndDropSource {
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = {
+                            val paths = if (selectedPaths.contains(item.path)) selectedPaths else setOf(item.path)
+                            val first = paths.first()
+                            val clipData = ClipData.newPlainText("files", first)
+                            paths.drop(1).forEach { clipData.addItem(ClipData.Item(it)) }
+
+                            startTransfer(
+                                DragAndDropTransferData(
+                                    clipData = clipData,
+                                    flags = View.DRAG_FLAG_GLOBAL
+                                )
+                            )
+                        },
+                        onDrag = { _, _ -> },
+                        onDragEnd = {},
+                        onDragCancel = {}
+                    )
+                }
+
                  if (isGridView) {
-                    FileGridItem(item = item, isSelected = selectedPaths.contains(item.path), onClick = { onItemClick(paneIndex, item) }, onLongClick = { onItemLongClick(paneIndex, item) })
+                    FileGridItem(
+                        item = item,
+                        isSelected = selectedPaths.contains(item.path),
+                        onClick = { onItemClick(paneIndex, item) },
+                        onLongClick = { onItemLongClick(paneIndex, item) },
+                        modifier = dragModifier
+                    )
                  } else {
-                    FileCard(item = item, isSelected = selectedPaths.contains(item.path), sortMode = sortMode, onClick = { onItemClick(paneIndex, item) }, onLongClick = { onItemLongClick(paneIndex, item) }, directorySize = directorySizes[item.path])
+                    FileCard(
+                        item = item,
+                        isSelected = selectedPaths.contains(item.path),
+                        sortMode = sortMode,
+                        onClick = { onItemClick(paneIndex, item) },
+                        onLongClick = { onItemLongClick(paneIndex, item) },
+                        directorySize = directorySizes[item.path],
+                        modifier = dragModifier
+                    )
                  }
             }
         }
@@ -1527,11 +1612,33 @@ fun PaneBrowser(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 items(displayedList, key = { it.path }) { item ->
+                    val dragModifier = Modifier.dragAndDropSource {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                val paths = if (selectedPaths.contains(item.path)) selectedPaths else setOf(item.path)
+                                val first = paths.first()
+                                val clipData = ClipData.newPlainText("files", first)
+                                paths.drop(1).forEach { clipData.addItem(ClipData.Item(it)) }
+
+                                startTransfer(
+                                    DragAndDropTransferData(
+                                        clipData = clipData,
+                                        flags = View.DRAG_FLAG_GLOBAL
+                                    )
+                                )
+                            },
+                            onDrag = { _, _ -> },
+                            onDragEnd = {},
+                            onDragCancel = {}
+                        )
+                    }
+
                     FileGridItem(
                         item = item,
                         isSelected = selectedPaths.contains(item.path),
                         onClick = { onItemClick(paneIndex, item) },
-                        onLongClick = { onItemLongClick(paneIndex, item) }
+                        onLongClick = { onItemLongClick(paneIndex, item) },
+                        modifier = dragModifier
                     )
                 }
             }
@@ -1542,13 +1649,35 @@ fun PaneBrowser(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 items(displayedList, key = { it.path }) { item ->
+                    val dragModifier = Modifier.dragAndDropSource {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                val paths = if (selectedPaths.contains(item.path)) selectedPaths else setOf(item.path)
+                                val first = paths.first()
+                                val clipData = ClipData.newPlainText("files", first)
+                                paths.drop(1).forEach { clipData.addItem(ClipData.Item(it)) }
+
+                                startTransfer(
+                                    DragAndDropTransferData(
+                                        clipData = clipData,
+                                        flags = View.DRAG_FLAG_GLOBAL
+                                    )
+                                )
+                            },
+                            onDrag = { _, _ -> },
+                            onDragEnd = {},
+                            onDragCancel = {}
+                        )
+                    }
+
                     FileCard(
                         item = item,
                         isSelected = selectedPaths.contains(item.path),
                         sortMode = sortMode,
                         onClick = { onItemClick(paneIndex, item) },
                         onLongClick = { onItemLongClick(paneIndex, item) },
-                        directorySize = directorySizes[item.path]
+                        directorySize = directorySizes[item.path],
+                        modifier = dragModifier
                     )
                 }
             }
@@ -1581,13 +1710,14 @@ fun FileCard(
     sortMode: SortMode,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
-    directorySize: Long?
+    directorySize: Long?,
+    modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
     val theme = LocalGlaiveTheme.current
 
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(64.dp)
             .clip(RoundedCornerShape(theme.shapes.cornerRadius))
@@ -1935,12 +2065,13 @@ fun FileGridItem(
     item: GlaiveItem,
     isSelected: Boolean,
     onClick: () -> Unit,
-    onLongClick: () -> Unit
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val theme = LocalGlaiveTheme.current
     val haptic = LocalHapticFeedback.current
     Column(
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(theme.shapes.cornerRadius))
             .background(if (isSelected) theme.colors.accent.copy(alpha = 0.15f) else theme.colors.surface)
             .border(if (isSelected) theme.shapes.borderWidth else 0.dp, if (isSelected) theme.colors.accent else Color.Transparent, RoundedCornerShape(theme.shapes.cornerRadius))
