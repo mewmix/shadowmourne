@@ -19,6 +19,8 @@ object NativeCore {
     private external fun nativeSearch(root: String, query: String, buffer: ByteBuffer, capacity: Int, filterMask: Int): Int
     private external fun nativeCalculateDirectorySize(path: String): Long
     private external fun nativeRunBenchmark(path: String)
+    private external fun nativeCancelSearch()
+    private external fun nativeResetSearch()
 
     suspend fun calculateDirectorySize(path: String): Long = withContext(Dispatchers.IO) {
         nativeCalculateDirectorySize(path)
@@ -46,7 +48,13 @@ object NativeCore {
     }
 
     suspend fun search(root: String, query: String, filterMask: Int = 0): List<GlaiveItem> = withContext(Dispatchers.IO) {
+        // Signal cancellation to any running search (on another thread)
+        nativeCancelSearch()
+
         synchronized(bufferLock) {
+            // Reset cancellation flag for this new search
+            nativeResetSearch()
+
             val filledBytes = nativeSearch(root, query, sharedBuffer, sharedBuffer.capacity(), filterMask)
             if (filledBytes <= 0) {
                 emptyList()
