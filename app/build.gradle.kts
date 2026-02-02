@@ -20,8 +20,8 @@ android {
         applicationId = "com.mewmix.glaive"
         minSdk = 28
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.0.1"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -33,6 +33,44 @@ android {
         }
         multiDexEnabled = true
         buildConfigField("String", "GIT_COMMIT_HASH", "\"$gitCommitHash\"")
+        // Build a GitHub commit URL based on the repository remote
+        val remoteUrl = try {
+            val process = ProcessBuilder("git", "config", "--get", "remote.origin.url").start()
+            process.inputStream.reader().use { it.readText() }.trim()
+        } catch (e: Exception) { "" }
+
+        fun toHttpsBase(url: String): String {
+            if (url.isBlank()) return ""
+            return when {
+                url.startsWith("git@") -> {
+                    val cleaned = url.removePrefix("git@")
+                    val parts = cleaned.split(":", limit = 2)
+                    if (parts.size == 2) {
+                        val host = parts[0]
+                        val path = parts[1].removeSuffix(".git").removeSuffix("/")
+                        "https://$host/$path"
+                    } else ""
+                }
+                url.startsWith("ssh://git@") -> {
+                    val cleaned = url.removePrefix("ssh://git@")
+                    val parts = cleaned.split("/", limit = 2)
+                    if (parts.size == 2) {
+                        val host = parts[0]
+                        val path = parts[1].removeSuffix(".git").removeSuffix("/")
+                        "https://$host/$path"
+                    } else ""
+                }
+                url.startsWith("https://") || url.startsWith("http://") -> {
+                    url.removeSuffix(".git").removeSuffix("/")
+                }
+                else -> url.removeSuffix(".git").removeSuffix("/")
+            }
+        }
+
+        val httpsBase = toHttpsBase(remoteUrl)
+        val gitCommitUrl = if (gitCommitHash.isNotBlank() && gitCommitHash != "unknown" && httpsBase.isNotBlank())
+            "$httpsBase/commit/$gitCommitHash" else ""
+        buildConfigField("String", "GIT_COMMIT_URL", "\"$gitCommitUrl\"")
     }
 
     buildTypes {

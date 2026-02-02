@@ -108,8 +108,8 @@ fun ThemeSettingsDialog(
                             text = "Commit: ${BuildConfig.GIT_COMMIT_HASH}",
                             color = currentTheme.colors.accent,
                             fontSize = 12.sp,
-                            modifier = Modifier.clickable {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/mewmix/shadowmourne/commit/${BuildConfig.GIT_COMMIT_HASH}"))
+                            modifier = Modifier.clickable(enabled = BuildConfig.GIT_COMMIT_URL.isNotBlank()) {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(BuildConfig.GIT_COMMIT_URL))
                                 context.startActivity(intent)
                             }
                         )
