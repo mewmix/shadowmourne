@@ -418,7 +418,7 @@ fun GlaiveScreen() {
                                 rawList = items.filter { it.name.contains(searchQuery, ignoreCase = true) }
                             } else {
                                 delay(150)
-                                rawList = NativeCore.search(ROOT_PATH, searchQuery, getFilterMask(activeFilters))
+                                rawList = NativeCore.search(currentPath, searchQuery, getFilterMask(activeFilters))
                             }
                         }
                     }
@@ -472,7 +472,7 @@ fun GlaiveScreen() {
                                 secondaryRawList = items.filter { it.name.contains(secondarySearchQuery, ignoreCase = true) }
                             } else {
                                 delay(150)
-                                secondaryRawList = NativeCore.search(ROOT_PATH, secondarySearchQuery, getFilterMask(activeFilters))
+                                secondaryRawList = NativeCore.search(secondaryPath, secondarySearchQuery, getFilterMask(activeFilters))
                             }
                         }
                     }

@@ -14,8 +14,8 @@
 #include <android/log.h>
 #include <limits.h>
 #include <time.h>
-
-int64_t calculate_dir_size_recursive(int parent_fd, const char *path);
+#include <pthread.h>
+#include <stdatomic.h>
 
 #define LOG_TAG "GLAIVE_C"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
@@ -40,6 +40,21 @@ typedef enum {
 } FileType;
 
 // ==========================================
+// GLOBALS & SYNC
+// ==========================================
+static volatile atomic_int g_cancel_search = 0;
+
+JNIEXPORT void JNICALL
+Java_com_mewmix_glaive_core_NativeCore_nativeCancelSearch(JNIEnv *env, jobject clazz) {
+    atomic_store(&g_cancel_search, 1);
+}
+
+JNIEXPORT void JNICALL
+Java_com_mewmix_glaive_core_NativeCore_nativeResetSearch(JNIEnv *env, jobject clazz) {
+    atomic_store(&g_cancel_search, 0);
+}
+
+// ==========================================
 // SEARCH CONTEXT
 // ==========================================
 typedef struct {
@@ -58,62 +73,139 @@ typedef struct {
     int filterMask;
 } SearchContext;
 
-int64_t calculate_dir_size_recursive(int parent_fd, const char *path) {
-    int64_t total_size = 0;
-    struct stat st;
+// ==========================================
+// WORK QUEUE
+// ==========================================
+typedef struct WorkItem {
+    char* path;
+    size_t len;
+    struct WorkItem* next;
+} WorkItem;
 
-    int dir_fd = openat(parent_fd, path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (dir_fd == -1) return 0;
+typedef struct {
+    WorkItem* head;
+    WorkItem* tail;
+    int count;
+    int active_workers;
+    int shutdown;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+} WorkQueue;
 
-    char kbuf[8192] __attribute__((aligned(8)));
-    struct linux_dirent64 *d;
-    int nread;
-
-    while ((nread = syscall(__NR_getdents64, dir_fd, kbuf, sizeof(kbuf))) > 0) {
-        int bpos = 0;
-        while (bpos < nread) {
-            d = (struct linux_dirent64 *)(kbuf + bpos);
-            bpos += d->d_reclen;
-
-            if (d->d_name[0] == '.') {
-                if (d->d_name[1] == 0) continue;
-                if (d->d_name[1] == '.' && d->d_name[2] == 0) continue;
-            }
-
-            unsigned char type = d->d_type;
-            if (type == DT_UNKNOWN) {
-                if (fstatat(dir_fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-                    if (S_ISDIR(st.st_mode)) type = DT_DIR;
-                    else type = DT_REG;
-                }
-            }
-
-            if (type == DT_DIR) {
-                total_size += calculate_dir_size_recursive(dir_fd, d->d_name);
-            } else {
-                // For files, we need size. If type was UNKNOWN, we might have already stat'ed.
-                // But simplifying logic: if we didn't stat yet, we stat now.
-                // To avoid double stat for UNKNOWN:
-                if (d->d_type == DT_UNKNOWN) {
-                     // st is valid from above check
-                     if (!S_ISDIR(st.st_mode)) total_size += st.st_size;
-                } else {
-                     if (fstatat(dir_fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-                         total_size += st.st_size;
-                     }
-                }
-            }
-        }
-    }
-
-    close(dir_fd);
-    return total_size;
+static void queue_init(WorkQueue* q) {
+    q->head = q->tail = NULL;
+    q->count = 0;
+    q->active_workers = 0;
+    q->shutdown = 0;
+    pthread_mutex_init(&q->lock, NULL);
+    pthread_cond_init(&q->cond, NULL);
 }
 
+static void queue_push(WorkQueue* q, char* path, size_t len) {
+    WorkItem* item = (WorkItem*)malloc(sizeof(WorkItem));
+    item->path = path;
+    item->len = len;
+    item->next = NULL;
+
+    pthread_mutex_lock(&q->lock);
+    if (q->tail) {
+        q->tail->next = item;
+        q->tail = item;
+    } else {
+        q->head = q->tail = item;
+    }
+    q->count++;
+    pthread_cond_signal(&q->cond);
+    pthread_mutex_unlock(&q->lock);
+}
+
+static WorkItem* queue_pop(WorkQueue* q) {
+    pthread_mutex_lock(&q->lock);
+    while (q->count == 0 && !q->shutdown) {
+        if (q->active_workers == 0) {
+            // No work left and no workers active -> Done
+            q->shutdown = 1;
+            pthread_cond_broadcast(&q->cond);
+            pthread_mutex_unlock(&q->lock);
+            return NULL;
+        }
+        pthread_cond_wait(&q->cond, &q->lock);
+    }
+
+    if (q->shutdown) {
+        pthread_mutex_unlock(&q->lock);
+        return NULL;
+    }
+
+    WorkItem* item = q->head;
+    if (item) {
+        q->head = item->next;
+        if (!q->head) q->tail = NULL;
+        q->count--;
+        q->active_workers++;
+    }
+    pthread_mutex_unlock(&q->lock);
+    return item;
+}
+
+static void queue_worker_done(WorkQueue* q) {
+    pthread_mutex_lock(&q->lock);
+    q->active_workers--;
+    if (q->count == 0 && q->active_workers == 0) {
+        q->shutdown = 1;
+        pthread_cond_broadcast(&q->cond);
+    }
+    pthread_mutex_unlock(&q->lock);
+}
+
+static void queue_destroy(WorkQueue* q) {
+    pthread_mutex_destroy(&q->lock);
+    pthread_cond_destroy(&q->cond);
+    WorkItem* curr = q->head;
+    while(curr) {
+        WorkItem* next = curr->next;
+        free(curr->path);
+        free(curr);
+        curr = next;
+    }
+}
 
 // ==========================================
-// SEARCH HELPERS
+// RESULT BUFFER
 // ==========================================
+typedef struct {
+    unsigned char* start;
+    unsigned char* current;
+    unsigned char* end;
+    pthread_mutex_t lock;
+    size_t base_len;
+} GlobalBuffer;
+
+static void gbuf_init(GlobalBuffer* gb, unsigned char* buf, int cap, size_t base_len) {
+    gb->start = buf;
+    gb->current = buf;
+    gb->end = buf + cap;
+    gb->base_len = base_len;
+    pthread_mutex_init(&gb->lock, NULL);
+}
+
+static void gbuf_write(GlobalBuffer* gb, const unsigned char* data, size_t len) {
+    pthread_mutex_lock(&gb->lock);
+    if (gb->current + len <= gb->end) {
+        memcpy(gb->current, data, len);
+        gb->current += len;
+    }
+    pthread_mutex_unlock(&gb->lock);
+}
+
+static void gbuf_destroy(GlobalBuffer* gb) {
+    pthread_mutex_destroy(&gb->lock);
+}
+
+// ==========================================
+// HELPERS
+// ==========================================
+
 static inline int has_glob_tokens(const char *pattern) {
     while (*pattern) {
         if (*pattern == '*' || *pattern == '?') return 1;
@@ -129,7 +221,6 @@ static void setup_search_context(SearchContext* ctx, const char* query, int filt
     ctx->filterMask = filterMask;
     ctx->use_second = 0;
 
-    // Check for *text* pattern optimization
     if (ctx->glob_mode && ctx->qlen > 2 && ctx->query[0] == '*' && ctx->query[ctx->qlen - 1] == '*') {
         int internal_wildcard = 0;
         for (size_t k = 1; k < ctx->qlen - 1; k++) {
@@ -165,7 +256,6 @@ static inline unsigned char fold_ci(unsigned char c) {
 
 static int optimized_neon_contains(const char *haystack, int h_len, const SearchContext* ctx) {
     if (h_len < ctx->qlen) return 0;
-
     size_t n_len = ctx->qlen;
     const char* needle = ctx->query;
     uint8_t first = ctx->first_char_lower;
@@ -177,34 +267,27 @@ static int optimized_neon_contains(const char *haystack, int h_len, const Search
         uint8x16_t v2_l = ctx->v_second_lower;
         uint8x16_t v2_u = ctx->v_second_upper;
         uint8_t second = ctx->second_char_lower;
-
         for (; i + 16 <= h_len; i += 16) {
             uint8x16_t block1 = vld1q_u8((const uint8_t*)(haystack + i));
             uint8x16_t block2 = vld1q_u8((const uint8_t*)(haystack + i + 1));
-
             uint8x16_t eq1 = vorrq_u8(vceqq_u8(block1, v1_l), vceqq_u8(block1, v1_u));
             uint8x16_t eq2 = vorrq_u8(vceqq_u8(block2, v2_l), vceqq_u8(block2, v2_u));
             uint8x16_t eq = vandq_u8(eq1, eq2);
-
             uint64x2_t fold = vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(eq)));
             if (vgetq_lane_u64(fold, 0) | vgetq_lane_u64(fold, 1)) {
                 for (int k = 0; k < 16; k++) {
-                    if (tolower(haystack[i + k]) == first &&
-                        tolower(haystack[i + k + 1]) == second) {
+                    if (tolower(haystack[i + k]) == first && tolower(haystack[i + k + 1]) == second) {
                         if (strncasecmp(haystack + i + k, needle, n_len) == 0) return 1;
                     }
                 }
             }
         }
     } else {
-        // Single char SIMD
         uint8x16_t v_lower = ctx->v_first_lower;
         uint8x16_t v_upper = ctx->v_first_upper;
-
         for (; i + 16 <= h_len; i += 16) {
             uint8x16_t block = vld1q_u8((const uint8_t*)(haystack + i));
             uint8x16_t eq = vorrq_u8(vceqq_u8(block, v_lower), vceqq_u8(block, v_upper));
-
             uint64x2_t fold = vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(eq)));
             if (vgetq_lane_u64(fold, 0) | vgetq_lane_u64(fold, 1)) {
                 for (int k = 0; k < 16; k++) {
@@ -215,8 +298,6 @@ static int optimized_neon_contains(const char *haystack, int h_len, const Search
             }
         }
     }
-
-    // Cleanup loop
     for (; i < h_len; i++) {
         if (tolower(haystack[i]) == first) {
             if (strncasecmp(haystack + i, needle, n_len) == 0) return 1;
@@ -230,25 +311,17 @@ static int glob_match_ci(const char *text, const char *pattern) {
     const char *p = pattern;
     const char *star = NULL;
     const char *match = NULL;
-
     while (*t) {
         unsigned char tc = fold_ci((unsigned char)*t);
         unsigned char pc = (unsigned char)*p;
-
         if (pc && (pc == '?' || fold_ci(pc) == tc)) {
-            t++;
-            p++;
-            continue;
+            t++; p++; continue;
         }
         if (pc == '*') {
-            star = ++p;
-            match = t;
-            continue;
+            star = ++p; match = t; continue;
         }
         if (star) {
-            p = star;
-            t = ++match;
-            continue;
+            p = star; t = ++match; continue;
         }
         return 0;
     }
@@ -260,80 +333,67 @@ static inline int optimized_matches_query(const char *name, int name_len, const 
     return ctx->glob_mode ? glob_match_ci(name, ctx->query) : optimized_neon_contains(name, name_len, ctx);
 }
 
-// ==========================================
-// FAST LISTING CORE
-// ==========================================
-// ==========================================
-// TYPE DETECTION (Pure C - No ASM)
-// ==========================================
 static inline unsigned char fast_get_type(const char *name, int name_len) {
     if (name_len < 4) return TYPE_FILE;
-
     const char *ext = name + name_len - 1;
-    // Scan backwards for dot
     int i = 0;
     while (i < 6 && ext > name) {
         if (*ext == '.') break;
-        ext--;
-        i++;
+        ext--; i++;
     }
     if (*ext != '.') return TYPE_FILE;
-    
-    // ext now points to dot.
-    
     char e1 = tolower(ext[1]);
     char e2 = tolower(ext[2]);
     char e3 = tolower(ext[3]);
     char e4 = (i >= 4) ? tolower(ext[4]) : 0;
 
     if (e1 == 'p') {
-        if (e2 == 'n' && e3 == 'g') return TYPE_IMG; // png
-        if (e2 == 'd' && e3 == 'f') return TYPE_DOC; // pdf
-        if (e2 == 'p' && e3 == 't') return TYPE_DOC; // ppt, pptx
+        if (e2 == 'n' && e3 == 'g') return TYPE_IMG;
+        if (e2 == 'd' && e3 == 'f') return TYPE_DOC;
+        if (e2 == 'p' && e3 == 't') return TYPE_DOC;
     }
     if (e1 == 'j') {
-        if (e2 == 'p' && e3 == 'g') return TYPE_IMG; // jpg
-        if (e2 == 'p' && e3 == 'e' && e4 == 'g') return TYPE_IMG; // jpeg
+        if (e2 == 'p' && e3 == 'g') return TYPE_IMG;
+        if (e2 == 'p' && e3 == 'e' && e4 == 'g') return TYPE_IMG;
     }
     if (e1 == 'm') {
-        if (e2 == 'p' && e3 == '4') return TYPE_VID; // mp4
-        if (e2 == 'k' && e3 == 'v') return TYPE_VID; // mkv
-        if (e2 == 'o' && e3 == 'v') return TYPE_VID; // mov
+        if (e2 == 'p' && e3 == '4') return TYPE_VID;
+        if (e2 == 'k' && e3 == 'v') return TYPE_VID;
+        if (e2 == 'o' && e3 == 'v') return TYPE_VID;
     }
     if (e1 == 'a') {
-        if (e2 == 'p' && e3 == 'k') return TYPE_APK; // apk
-        if (e2 == 'v' && e3 == 'i') return TYPE_VID; // avi
+        if (e2 == 'p' && e3 == 'k') return TYPE_APK;
+        if (e2 == 'v' && e3 == 'i') return TYPE_VID;
     }
     if (e1 == 'g') {
-        if (e2 == 'i' && e3 == 'f') return TYPE_IMG; // gif
+        if (e2 == 'i' && e3 == 'f') return TYPE_IMG;
     }
     if (e1 == 'w') {
         if (e2 == 'e' && e3 == 'b') {
-            if (e4 == 'p') return TYPE_IMG; // webp
-            if (e4 == 'm') return TYPE_VID; // webm
+            if (e4 == 'p') return TYPE_IMG;
+            if (e4 == 'm') return TYPE_VID;
         }
     }
     if (e1 == 'd') {
-        if (e2 == 'o' && e3 == 'c') return TYPE_DOC; // doc, docx
+        if (e2 == 'o' && e3 == 'c') return TYPE_DOC;
     }
     if (e1 == 'x') {
-        if (e2 == 'l' && e3 == 's') return TYPE_DOC; // xls, xlsx
+        if (e2 == 'l' && e3 == 's') return TYPE_DOC;
     }
     if (e1 == 't') {
-        if (e2 == 'x' && e3 == 't') return TYPE_DOC; // txt
+        if (e2 == 'x' && e3 == 't') return TYPE_DOC;
     }
     if (e1 == '3') {
-        if (e2 == 'g' && e3 == 'p') return TYPE_VID; // 3gp
+        if (e2 == 'g' && e3 == 'p') return TYPE_VID;
     }
     if (e1 == 'b') {
-        if (e2 == 'm' && e3 == 'p') return TYPE_IMG; // bmp
+        if (e2 == 'm' && e3 == 'p') return TYPE_IMG;
     }
-
     return TYPE_FILE;
 }
 
 // ==========================================
-// SORTING
+// LISTING (RESTORED)
 // ==========================================
 typedef struct {
     char* name;
@@ -343,48 +403,36 @@ typedef struct {
     int64_t time;
 } GlaiveEntry;
 
-typedef enum {
-    SORT_NAME = 0,
-    SORT_DATE = 1,
-    SORT_SIZE = 2,
-    SORT_TYPE = 3
-} SortMode;
-
-static int g_sort_mode = SORT_NAME;
+static int g_sort_mode = 0;
 static int g_sort_asc = 1;
 
 int compare_entries(const void* a, const void* b) {
     GlaiveEntry* ea = (GlaiveEntry*)a;
     GlaiveEntry* eb = (GlaiveEntry*)b;
 
-    // Always Directories First
     if (ea->type == TYPE_DIR && eb->type != TYPE_DIR) return -1;
     if (ea->type != TYPE_DIR && eb->type == TYPE_DIR) return 1;
 
     int result = 0;
     switch (g_sort_mode) {
-        case SORT_NAME:
-            result = strcasecmp(ea->name, eb->name);
-            break;
-        case SORT_SIZE:
+        case 0: result = strcasecmp(ea->name, eb->name); break;
+        case 2:
             if (ea->size < eb->size) result = -1;
             else if (ea->size > eb->size) result = 1;
             else result = strcasecmp(ea->name, eb->name);
             break;
-        case SORT_DATE:
+        case 1:
             if (ea->time < eb->time) result = -1;
             else if (ea->time > eb->time) result = 1;
             else result = strcasecmp(ea->name, eb->name);
             break;
-        case SORT_TYPE:
+        case 3:
             if (ea->type < eb->type) result = -1;
             else if (ea->type > eb->type) result = 1;
             else result = strcasecmp(ea->name, eb->name);
             break;
-        default:
-            result = strcasecmp(ea->name, eb->name);
+        default: result = strcasecmp(ea->name, eb->name);
     }
-
     return g_sort_asc ? result : -result;
 }
 
@@ -405,7 +453,6 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
         return -1;
     }
 
-    // Temporary storage for sorting
     size_t max_entries = 4096;
     size_t count = 0;
     GlaiveEntry* entries = (GlaiveEntry*)malloc(max_entries * sizeof(GlaiveEntry));
@@ -435,26 +482,19 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
             int64_t size = 0;
             int64_t time = 0;
 
-            if (d->d_type == DT_DIR) {
-                type = TYPE_DIR;
-            } else if (d->d_type == DT_REG) {
-                type = fast_get_type(d->d_name, name_len);
-            } else {
+            if (d->d_type == DT_DIR) type = TYPE_DIR;
+            else if (d->d_type == DT_REG) type = fast_get_type(d->d_name, name_len);
+            else {
                  if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
                     if (S_ISDIR(st.st_mode)) type = TYPE_DIR;
                     else type = fast_get_type(d->d_name, name_len);
-                 } else {
-                    type = TYPE_FILE;
-                 }
+                 } else type = TYPE_FILE;
             }
-            
             if (type == TYPE_UNKNOWN) type = fast_get_type(d->d_name, name_len);
             if (type == TYPE_UNKNOWN) type = TYPE_FILE;
 
             if (filterMask != 0 && type != TYPE_DIR) {
-                if (!((1 << type) & filterMask)) {
-                    continue; // Skip
-                }
+                if (!((1 << type) & filterMask)) continue;
             }
 
             if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
@@ -488,7 +528,6 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
     
     for (size_t i = 0; i < count; i++) {
         if (head + 2 + entries[i].name_len + 16 > end) break;
-
         *head++ = entries[i].type;
         *head++ = (unsigned char)entries[i].name_len;
         memcpy(head, entries[i].name, entries[i].name_len);
@@ -497,13 +536,235 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
         head += sizeof(int64_t);
         memcpy(head, &entries[i].time, sizeof(int64_t));
         head += sizeof(int64_t);
-
         free(entries[i].name);
     }
     free(entries);
 
     (*env)->ReleaseStringUTFChars(env, jPath, path);
     return (jint)(head - buffer);
+}
+
+// ==========================================
+// WORKER
+// ==========================================
+typedef struct {
+    WorkQueue* queue;
+    GlobalBuffer* gbuf;
+    const SearchContext* ctx;
+} WorkerArgs;
+
+#define LOCAL_BUF_SIZE 16384
+
+void* worker_thread(void* arg) {
+    WorkerArgs* args = (WorkerArgs*)arg;
+    WorkQueue* q = args->queue;
+    GlobalBuffer* gbuf = args->gbuf;
+    const SearchContext* ctx = args->ctx;
+
+    unsigned char local_buf[LOCAL_BUF_SIZE];
+    unsigned char* head = local_buf;
+    unsigned char* end = local_buf + LOCAL_BUF_SIZE;
+
+    while (1) {
+        if (atomic_load(&g_cancel_search)) {
+            pthread_mutex_lock(&q->lock);
+            q->shutdown = 1;
+            pthread_cond_broadcast(&q->cond);
+            pthread_mutex_unlock(&q->lock);
+            break;
+        }
+
+        WorkItem* item = queue_pop(q);
+        if (!item) break;
+
+        int fd = open(item->path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (fd != -1) {
+            char kbuf[4096] __attribute__((aligned(8)));
+            struct linux_dirent64 *d;
+            int nread;
+
+            while ((nread = syscall(__NR_getdents64, fd, kbuf, sizeof(kbuf))) > 0) {
+                if (atomic_load(&g_cancel_search)) break;
+
+                int bpos = 0;
+                while (bpos < nread) {
+                    d = (struct linux_dirent64 *)(kbuf + bpos);
+                    bpos += d->d_reclen;
+                    if (d->d_name[0] == '.') continue;
+
+                    int name_len = 0;
+                    while (d->d_name[name_len]) name_len++;
+
+                    unsigned char type = DT_UNKNOWN;
+                    if (d->d_type == DT_DIR) type = DT_DIR;
+                    else if (d->d_type == DT_REG) type = DT_REG;
+                    else {
+                        struct stat st;
+                        if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+                            if (S_ISDIR(st.st_mode)) type = DT_DIR; else type = DT_REG;
+                        }
+                    }
+
+                    if (type == DT_DIR) {
+                         size_t child_len = item->len + 1 + name_len;
+                         char* child_path = malloc(child_len + 1);
+                         memcpy(child_path, item->path, item->len);
+                         child_path[item->len] = '/';
+                         memcpy(child_path + item->len + 1, d->d_name, name_len + 1);
+                         queue_push(q, child_path, child_len);
+                    } else {
+                        if (optimized_matches_query(d->d_name, name_len, ctx)) {
+                            unsigned char g_type = fast_get_type(d->d_name, name_len);
+                            if (ctx->filterMask != 0) {
+                                if (!((1 << g_type) & ctx->filterMask)) continue;
+                            }
+
+                            size_t full_len = item->len + 1 + name_len;
+                            size_t rel_len = full_len - (gbuf->base_len + 1);
+
+                            if (head + 18 + rel_len > end) {
+                                gbuf_write(gbuf, local_buf, head - local_buf);
+                                head = local_buf;
+                            }
+
+                            int proto_len = (rel_len > 255) ? 255 : (int)rel_len;
+                            if (head + 18 + proto_len <= end) {
+                                *head++ = g_type;
+                                *head++ = (unsigned char)proto_len;
+
+                                char* base_ptr = item->path + gbuf->base_len + 1;
+                                size_t prefix_len = item->len - (gbuf->base_len + 1);
+                                if (prefix_len > 0) {
+                                    size_t copy_len = (prefix_len > proto_len) ? proto_len : prefix_len;
+                                    memcpy(head, base_ptr, copy_len);
+                                    if (copy_len < proto_len) {
+                                        head[copy_len] = '/';
+                                        size_t rem = proto_len - copy_len - 1;
+                                        if (rem > name_len) rem = name_len;
+                                        memcpy(head + copy_len + 1, d->d_name, rem);
+                                    }
+                                } else {
+                                     size_t copy_len = (name_len > proto_len) ? proto_len : name_len;
+                                     memcpy(head, d->d_name, copy_len);
+                                }
+
+                                head += proto_len;
+                                memset(head, 0, 16);
+                                head += 16;
+                            }
+                        }
+                    }
+                }
+            }
+            close(fd);
+        }
+        free(item->path);
+        free(item);
+        queue_worker_done(q);
+    }
+    if (head > local_buf) {
+        gbuf_write(gbuf, local_buf, head - local_buf);
+    }
+    return NULL;
+}
+
+// ==========================================
+// JNI INTERFACE (SEARCH)
+// ==========================================
+
+JNIEXPORT jint JNICALL
+Java_com_mewmix_glaive_core_NativeCore_nativeSearch(JNIEnv *env, jobject clazz, jstring jRoot, jstring jQuery, jobject jBuffer, jint capacity, jint filterMask) {
+    if (capacity <= 0) return 0;
+    if (atomic_load(&g_cancel_search)) return 0;
+
+    const char *root = (*env)->GetStringUTFChars(env, jRoot, NULL);
+    const char *query = (*env)->GetStringUTFChars(env, jQuery, NULL);
+    unsigned char *buffer = (*env)->GetDirectBufferAddress(env, jBuffer);
+
+    if (!buffer) {
+        (*env)->ReleaseStringUTFChars(env, jRoot, root);
+        (*env)->ReleaseStringUTFChars(env, jQuery, query);
+        return -2;
+    }
+
+    SearchContext ctx;
+    setup_search_context(&ctx, query, filterMask);
+
+    size_t root_len = strlen(root);
+    size_t base_len = root_len;
+    if (base_len > 1 && root[base_len - 1] == '/') base_len--;
+
+    GlobalBuffer gbuf;
+    gbuf_init(&gbuf, buffer, capacity, base_len);
+
+    WorkQueue q;
+    queue_init(&q);
+
+    char* root_dup = malloc(base_len + 1);
+    memcpy(root_dup, root, base_len);
+    root_dup[base_len] = 0;
+    queue_push(&q, root_dup, base_len);
+
+    #define NUM_THREADS 4
+    pthread_t threads[NUM_THREADS];
+    WorkerArgs args = { .queue = &q, .gbuf = &gbuf, .ctx = &ctx };
+
+    for (int i = 0; i < NUM_THREADS; i++) {
+        pthread_create(&threads[i], NULL, worker_thread, &args);
+    }
+    for (int i = 0; i < NUM_THREADS; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    queue_destroy(&q);
+    int result_len = (int)(gbuf.current - gbuf.start);
+    gbuf_destroy(&gbuf);
+
+    (*env)->ReleaseStringUTFChars(env, jRoot, root);
+    (*env)->ReleaseStringUTFChars(env, jQuery, query);
+    return result_len;
+}
+
+// ==========================================
+// LEGACY / UTILS
+// ==========================================
+
+int64_t calculate_dir_size_recursive(int parent_fd, const char *path) {
+    int64_t total_size = 0;
+    struct stat st;
+    int dir_fd = openat(parent_fd, path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dir_fd == -1) return 0;
+    char kbuf[8192] __attribute__((aligned(8)));
+    struct linux_dirent64 *d;
+    int nread;
+    while ((nread = syscall(__NR_getdents64, dir_fd, kbuf, sizeof(kbuf))) > 0) {
+        int bpos = 0;
+        while (bpos < nread) {
+            d = (struct linux_dirent64 *)(kbuf + bpos);
+            bpos += d->d_reclen;
+            if (d->d_name[0] == '.') {
+                if (d->d_name[1] == 0) continue;
+                if (d->d_name[1] == '.' && d->d_name[2] == 0) continue;
+            }
+            unsigned char type = d->d_type;
+            if (type == DT_UNKNOWN) {
+                if (fstatat(dir_fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+                    if (S_ISDIR(st.st_mode)) type = DT_DIR; else type = DT_REG;
+                }
+            }
+            if (type == DT_DIR) {
+                total_size += calculate_dir_size_recursive(dir_fd, d->d_name);
+            } else {
+                if (d->d_type == DT_UNKNOWN) {
+                     if (!S_ISDIR(st.st_mode)) total_size += st.st_size;
+                } else {
+                     if (fstatat(dir_fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) total_size += st.st_size;
+                }
+            }
+        }
+    }
+    close(dir_fd);
+    return total_size;
 }
 
 JNIEXPORT jlong JNICALL
@@ -525,147 +786,9 @@ Java_com_mewmix_glaive_core_NativeCore_nativeCalculateDirectorySize(JNIEnv *env,
     return size;
 }
 
-// ==========================================
-// SEARCH PIPELINE
-// ==========================================
-void recursive_scan_optimized(char* path_buf, size_t current_len, size_t base_len,
-                              const SearchContext* ctx,
-                              unsigned char** head_ptr, unsigned char* end) {
-    if (*head_ptr >= end) return;
-
-    int fd = open(path_buf, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (fd == -1) return;
-
-    // Use a stack buffer for getdents to avoid malloc
-    char kbuf[4096] __attribute__((aligned(8)));
-    struct linux_dirent64 *d;
-    int nread;
-
-    while ((nread = syscall(__NR_getdents64, fd, kbuf, sizeof(kbuf))) > 0) {
-        int bpos = 0;
-        while (bpos < nread) {
-            if (*head_ptr >= end) break;
-
-            d = (struct linux_dirent64 *)(kbuf + bpos);
-            bpos += d->d_reclen;
-
-            // Skip hidden files/dots
-            if (d->d_name[0] == '.') continue;
-
-            int name_len = 0;
-            while (d->d_name[name_len]) name_len++;
-
-            // Handle d_type for correctness
-            unsigned char type = DT_UNKNOWN;
-            if (d->d_type == DT_DIR) {
-                type = DT_DIR;
-            } else if (d->d_type == DT_REG) {
-                type = DT_REG;
-            } else {
-                // Fallback for unknown type
-                 struct stat st;
-                 if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-                     if (S_ISDIR(st.st_mode)) type = DT_DIR;
-                     else type = DT_REG;
-                 }
-            }
-
-            if (type == DT_DIR) {
-                if (strcmp(d->d_name, "Android") != 0) {
-                    if (current_len + 1 + name_len < 4096) {
-                        path_buf[current_len] = '/';
-                        memcpy(path_buf + current_len + 1, d->d_name, name_len + 1);
-
-                        recursive_scan_optimized(path_buf, current_len + 1 + name_len, base_len, ctx, head_ptr, end);
-
-                        path_buf[current_len] = 0;
-                    }
-                }
-            } else {
-                // It is a file (or treated as one)
-                if (optimized_matches_query(d->d_name, name_len, ctx)) {
-                    
-                    unsigned char g_type = fast_get_type(d->d_name, name_len);
-                    if (ctx->filterMask != 0) {
-                        if (!((1 << g_type) & ctx->filterMask)) continue;
-                    }
-
-                    if (current_len + 1 + name_len < 4096) {
-                        path_buf[current_len] = '/';
-                        memcpy(path_buf + current_len + 1, d->d_name, name_len + 1);
-
-                        char* rel_path = path_buf + base_len + 1;
-                        size_t rel_len = (current_len + 1 + name_len) - (base_len + 1);
-
-                        int proto_len = (rel_len > 255) ? 255 : (int)rel_len;
-
-                        if (*head_ptr + 2 + proto_len + 16 <= end) {
-                            *(*head_ptr)++ = g_type;
-                            *(*head_ptr)++ = (unsigned char)proto_len;
-                            memcpy(*head_ptr, rel_path, proto_len);
-                            *head_ptr += proto_len;
-
-                            // Zero size/time for search results (lazy load or not needed)
-                            memset(*head_ptr, 0, 16);
-                            *head_ptr += 16;
-                        }
-
-                        path_buf[current_len] = 0;
-                    }
-                }
-            }
-        }
-    }
-    close(fd);
-}
-
-JNIEXPORT jint JNICALL
-Java_com_mewmix_glaive_core_NativeCore_nativeSearch(JNIEnv *env, jobject clazz, jstring jRoot, jstring jQuery, jobject jBuffer, jint capacity, jint filterMask) {
-    if (capacity <= 0) return 0;
-
-    const char *root = (*env)->GetStringUTFChars(env, jRoot, NULL);
-    const char *query = (*env)->GetStringUTFChars(env, jQuery, NULL);
-    unsigned char *buffer = (*env)->GetDirectBufferAddress(env, jBuffer);
-
-    if (!buffer) {
-        (*env)->ReleaseStringUTFChars(env, jRoot, root);
-        (*env)->ReleaseStringUTFChars(env, jQuery, query);
-        return -2;
-    }
-
-    // Init Context
-    SearchContext ctx;
-    setup_search_context(&ctx, query, filterMask);
-
-    unsigned char *head = buffer;
-    unsigned char *end = buffer + capacity;
-
-    char path_buf[4096];
-    
-    size_t root_len = strlen(root);
-    if (root_len < 4096) {
-        strcpy(path_buf, root);
-        if (root_len > 1 && path_buf[root_len - 1] == '/') {
-            path_buf[root_len - 1] = 0;
-            root_len--;
-        }
-        
-        recursive_scan_optimized(path_buf, root_len, root_len, &ctx, &head, end);
-    }
-
-    (*env)->ReleaseStringUTFChars(env, jRoot, root);
-    (*env)->ReleaseStringUTFChars(env, jQuery, query);
-    
-    return (jint)(head - buffer);
-}
-
-// ==========================================
-// BENCHMARK
-// ==========================================
 static void create_benchmark_files(const char* base_path) {
     mkdir(base_path, 0777);
     char path[4096];
-    // 20 dirs * 500 files = 10,000 files
     for (int i = 0; i < 20; i++) {
         snprintf(path, sizeof(path), "%s/dir_%d", base_path, i);
         mkdir(path, 0777);
@@ -685,75 +808,13 @@ Java_com_mewmix_glaive_core_NativeCore_nativeRunBenchmark(JNIEnv *env, jobject c
     const char *path = (*env)->GetStringUTFChars(env, jPath, NULL);
     char bench_path[4096];
     snprintf(bench_path, sizeof(bench_path), "%s/BENCHMARK", path);
-
-    struct timespec start, end;
-
     LOGE("BENCHMARK STARTING at %s", bench_path);
-
-    // 1. SETUP
-    clock_gettime(CLOCK_MONOTONIC, &start);
     create_benchmark_files(bench_path);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    double elapsed_setup = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
-    LOGE("BENCHMARK SETUP: %.6f s", elapsed_setup);
-
-    // 2. DIR SIZE (RECURSIVE)
     int fd = open(bench_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (fd != -1) {
-        clock_gettime(CLOCK_MONOTONIC, &start);
         int64_t size = calculate_dir_size_recursive(fd, ".");
-        clock_gettime(CLOCK_MONOTONIC, &end);
-        double elapsed_size = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
-        LOGE("BENCHMARK DIR SIZE: %.6f s (Size: %lld)", elapsed_size, (long long)size);
+        LOGE("BENCHMARK DIR SIZE: %lld", (long long)size);
         close(fd);
-    } else {
-        LOGE("BENCHMARK DIR SIZE: Failed to open dir");
     }
-
-    // 3. SEARCH (SUBSTRING)
-    size_t cap = 2 * 1024 * 1024;
-    unsigned char* buffer = malloc(cap);
-    if (!buffer) {
-        LOGE("BENCHMARK: Malloc failed");
-        (*env)->ReleaseStringUTFChars(env, jPath, path);
-        return;
-    }
-
-    const char* queries[] = {"file_10_20", "file_5"}; // Specific, Common
-    for (int q = 0; q < 2; q++) {
-        const char* query = queries[q];
-        unsigned char* head = buffer;
-        unsigned char* buf_end = buffer + cap;
-
-        SearchContext ctx;
-        setup_search_context(&ctx, query, 0);
-
-        clock_gettime(CLOCK_MONOTONIC, &start);
-        recursive_scan_optimized(strdup(bench_path), strlen(bench_path), strlen(bench_path), &ctx, &head, buf_end);
-        clock_gettime(CLOCK_MONOTONIC, &end);
-
-        double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
-        LOGE("BENCHMARK SEARCH '%s': %.6f s (Found: %ld)", query, elapsed, (head - buffer)/16);
-    }
-
-    // 4. SEARCH (GLOB)
-    const char* globs[] = {"*file_10_20*", "file_5*"};
-    for (int q = 0; q < 2; q++) {
-        const char* query = globs[q];
-        unsigned char* head = buffer;
-        unsigned char* buf_end = buffer + cap;
-
-        SearchContext ctx;
-        setup_search_context(&ctx, query, 0);
-
-        clock_gettime(CLOCK_MONOTONIC, &start);
-        recursive_scan_optimized(strdup(bench_path), strlen(bench_path), strlen(bench_path), &ctx, &head, buf_end);
-        clock_gettime(CLOCK_MONOTONIC, &end);
-
-        double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
-        LOGE("BENCHMARK GLOB '%s': %.6f s (Found: %ld)", query, elapsed, (head - buffer)/16);
-    }
-
-    free(buffer);
     (*env)->ReleaseStringUTFChars(env, jPath, path);
 }
