@@ -25,6 +25,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.draganddrop.dragAndDropSource
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -69,6 +72,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.DragAndDropTransferData
+import androidx.compose.ui.draganddrop.mimeTypes
+import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -107,6 +115,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import android.content.ClipData
+import android.view.View
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
@@ -158,6 +168,8 @@ fun GlaiveScreen() {
         var clipboardItems by remember { mutableStateOf<List<File>>(emptyList()) }
         var isCutOperation by remember { mutableStateOf(false) }
         var showCreateDialog by remember { mutableStateOf(false) }
+        var showDropDialog by remember { mutableStateOf(false) }
+        var dropActionTarget by remember { mutableStateOf(0) }
         var showEditor by remember { mutableStateOf(false) }
         var editorFile by remember { mutableStateOf<File?>(null) }
         val pathHistory = remember { mutableStateListOf<String>() }
@@ -186,7 +198,7 @@ fun GlaiveScreen() {
 
         val scope = rememberCoroutineScope()
 
-        fun runBlocking(message: String, block: suspend () -> Unit) {
+        fun performAsyncOperation(message: String, block: suspend () -> Unit) {
             blockingMessage = message
             scope.launch {
                 try {
@@ -194,22 +206,6 @@ fun GlaiveScreen() {
                 } finally {
                     blockingMessage = null
                 }
-            }
-        }
-
-        fun checkInefficientAndRun(files: List<File>, onProceed: () -> Unit) {
-            val hasCompressed = files.any { file ->
-                // Basic check on extension. For directories, we'd need to recurse,
-                // but for now we assume user knows what's in a dir or we only check file level.
-                // A deep check might be too slow for UI thread.
-                // If it is a directory, we can skip or assume it might contain mixed content.
-                // Strict check: if it is a file and matches extension.
-                !file.isDirectory && INEFF_EXTENSIONS.contains(file.extension.lowercase(Locale.getDefault()))
-            }
-            if (hasCompressed) {
-                inefficientAction = onProceed
-            } else {
-                onProceed()
             }
         }
 
@@ -245,7 +241,7 @@ fun GlaiveScreen() {
         fun handlePaste(paneIndex: Int) {
             val count = clipboardItems.size
             val op = if (isCutOperation) "Moving" else "Copying"
-            runBlocking("$op $count items...") {
+            performAsyncOperation("$op $count items...") {
                 DebugLogger.logSuspend("Pasting ${clipboardItems.size} items to pane $paneIndex") {
                     val targetPath = panePath(paneIndex)
                     val archiveRoot = FileOperations.getArchiveRoot(targetPath)
@@ -274,6 +270,63 @@ fun GlaiveScreen() {
                         if (paneIndex == 0) rawList = updated else secondaryRawList = updated
                     }
                 }
+            }
+        }
+
+        fun handleDrop(event: DragAndDropEvent, targetPaneIndex: Int) {
+            val clipData = event.toAndroidDragEvent().clipData ?: return
+            if (clipData.itemCount > 0) {
+                val droppedPaths = mutableListOf<String>()
+                for (i in 0 until clipData.itemCount) {
+                    val item = clipData.getItemAt(i)
+                    if (item.text != null) {
+                        droppedPaths.add(item.text.toString())
+                    }
+                }
+
+                if (droppedPaths.isNotEmpty()) {
+                    val isTrashSource = droppedPaths.any { RecycleBinManager.isTrashItem(it) }
+                    if (isTrashSource) {
+                        performAsyncOperation("Restoring dropped items...") {
+                            droppedPaths.forEach { path ->
+                                if (RecycleBinManager.isTrashItem(path)) {
+                                    val trashFile = File(path)
+                                    val targetDir = File(panePath(targetPaneIndex))
+                                    val name = trashFile.name
+                                    val underscoreIndex = name.indexOf('_')
+                                    val originalName = if (underscoreIndex > 0) name.substring(underscoreIndex + 1) else name
+                                    val destFile = File(targetDir, originalName)
+
+                                    if (FileOperations.move(trashFile, destFile)) {
+                                        RecycleBinManager.deletePermanently(trashFile) // Cleans index
+                                    }
+                                }
+                            }
+                            val updated = NativeCore.list(panePath(targetPaneIndex))
+                            if (targetPaneIndex == 0) rawList = updated else secondaryRawList = updated
+                        }
+                    } else {
+                        clipboardItems = droppedPaths.map { File(it) }
+                        dropActionTarget = targetPaneIndex
+                        showDropDialog = true
+                    }
+                }
+            }
+        }
+
+        fun checkInefficientAndRun(files: List<File>, onProceed: () -> Unit) {
+            val hasCompressed = files.any { file ->
+                // Basic check on extension. For directories, we'd need to recurse,
+                // but for now we assume user knows what's in a dir or we only check file level.
+                // A deep check might be too slow for UI thread.
+                // If it is a directory, we can skip or assume it might contain mixed content.
+                // Strict check: if it is a file and matches extension.
+                !file.isDirectory && INEFF_EXTENSIONS.contains(file.extension.lowercase(Locale.getDefault()))
+            }
+            if (hasCompressed) {
+                inefficientAction = onProceed
+            } else {
+                onProceed()
             }
         }
 
@@ -365,7 +418,7 @@ fun GlaiveScreen() {
                                 rawList = items.filter { it.name.contains(searchQuery, ignoreCase = true) }
                             } else {
                                 delay(150)
-                                rawList = NativeCore.search(ROOT_PATH, searchQuery, getFilterMask(activeFilters))
+                                rawList = NativeCore.search(currentPath, searchQuery, getFilterMask(activeFilters))
                             }
                         }
                     }
@@ -419,7 +472,7 @@ fun GlaiveScreen() {
                                 secondaryRawList = items.filter { it.name.contains(secondarySearchQuery, ignoreCase = true) }
                             } else {
                                 delay(150)
-                                secondaryRawList = NativeCore.search(ROOT_PATH, secondarySearchQuery, getFilterMask(activeFilters))
+                                secondaryRawList = NativeCore.search(secondaryPath, secondarySearchQuery, getFilterMask(activeFilters))
                             }
                         }
                     }
@@ -612,7 +665,8 @@ fun GlaiveScreen() {
                                     directorySizes = directorySizes,
                                     canMaximize = splitScopeEnabled && maximizedPane == -1,
                                     isSearchMode = paneIsSearchActive(0) && paneSearchQuery(0).isNotEmpty(),
-                                    activePath = panePath(0)
+                                    activePath = panePath(0),
+                                    onDrop = { event -> handleDrop(event, 0) }
                                 )
                             }
                             if (maximizedPane == -1) {
@@ -659,7 +713,8 @@ fun GlaiveScreen() {
                                     directorySizes = directorySizes,
                                     canMaximize = splitScopeEnabled && maximizedPane == -1,
                                     isSearchMode = paneIsSearchActive(1) && paneSearchQuery(1).isNotEmpty(),
-                                    activePath = panePath(1)
+                                    activePath = panePath(1),
+                                    onDrop = { event -> handleDrop(event, 1) }
                                 )
                             }
                         }
@@ -682,7 +737,8 @@ fun GlaiveScreen() {
                         directorySizes = directorySizes,
                         canMaximize = false,
                         isSearchMode = paneIsSearchActive(activePane) && paneSearchQuery(activePane).isNotEmpty(),
-                        activePath = panePath(activePane)
+                        activePath = panePath(activePane),
+                        onDrop = { event -> handleDrop(event, activePane) }
                     )
                 }
             }
@@ -785,7 +841,7 @@ fun GlaiveScreen() {
                     isTrashItem = RecycleBinManager.isTrashItem(contextMenuTarget!!.path),
                     onRestore = {
                          val file = File(contextMenuTarget!!.path)
-                         runBlocking("Restoring ${file.name}...") {
+                         performAsyncOperation("Restoring ${file.name}...") {
                              RecycleBinManager.restore(file)
                              // Refresh
                              if (contextMenuPane == 0) {
@@ -820,11 +876,11 @@ fun GlaiveScreen() {
                     },
                     onZip = {
                         val targetFile = File(contextMenuTarget!!.path)
-                        runBlocking("Zipping ${targetFile.name}...") {
+                        performAsyncOperation("Zipping ${targetFile.name}...") {
                             val zipFile = File(targetFile.parent, "${targetFile.name}.zip")
                             if (targetFile.canonicalPath == zipFile.canonicalPath) {
                                 Toast.makeText(context, "Cannot zip a file into itself", Toast.LENGTH_SHORT).show()
-                                return@runBlocking
+                                return@performAsyncOperation
                             }
                             FileOperations.createArchive(listOf(targetFile), zipFile)
                             if (contextMenuPane == 0) {
@@ -840,11 +896,11 @@ fun GlaiveScreen() {
                     onCompressZstd = {
                         val targetFile = File(contextMenuTarget!!.path)
                         checkInefficientAndRun(listOf(targetFile)) {
-                             runBlocking("Compressing ${targetFile.name}...") {
+                             performAsyncOperation("Compressing ${targetFile.name}...") {
                                 val zstFile = File(targetFile.parent, "${targetFile.name}.tar.zst")
                                 if (targetFile.canonicalPath == zstFile.canonicalPath) {
                                     Toast.makeText(context, "Cannot compress a file into itself", Toast.LENGTH_SHORT).show()
-                                    return@runBlocking
+                                    return@performAsyncOperation
                                 }
                                 FileOperations.createArchive(listOf(targetFile), zstFile)
                                 if (contextMenuPane == 0) {
@@ -872,7 +928,7 @@ fun GlaiveScreen() {
                     },
                     onExtract = {
                         val targetFile = File(contextMenuTarget!!.path)
-                        runBlocking("Extracting ${targetFile.name}...") {
+                        performAsyncOperation("Extracting ${targetFile.name}...") {
                             val destDir = targetFile.parentFile ?: targetFile
                             FileOperations.extractArchive(targetFile, destDir)
                             val updated = NativeCore.list(panePath(activePane))
@@ -922,7 +978,7 @@ fun GlaiveScreen() {
                     onZip = {
                         val files = selectedPaths.map { File(it) }
                         if (files.isNotEmpty()) {
-                            runBlocking("Zipping ${files.size} items...") {
+                            performAsyncOperation("Zipping ${files.size} items...") {
                                 val parent = files.first().parentFile
                                 val zipName = if (files.size == 1) "${files.first().name}.zip" else "archive_${System.currentTimeMillis()}.zip"
                                 val zipFile = File(parent, zipName)
@@ -938,7 +994,7 @@ fun GlaiveScreen() {
                         val files = selectedPaths.map { File(it) }
                         if (files.isNotEmpty()) {
                             checkInefficientAndRun(files) {
-                                runBlocking("Compressing ${files.size} items...") {
+                                performAsyncOperation("Compressing ${files.size} items...") {
                                     val parent = files.first().parentFile
                                     val name = if (files.size == 1) "${files.first().name}.tar.zst" else "archive_${System.currentTimeMillis()}.tar.zst"
                                     val destFile = File(parent, name)
@@ -954,7 +1010,7 @@ fun GlaiveScreen() {
                     isTrashMode = RecycleBinManager.isTrashItem(panePath(activePane)),
                     onRestore = {
                         val files = selectedPaths.map { File(it) }
-                        runBlocking("Restoring ${files.size} items...") {
+                        performAsyncOperation("Restoring ${files.size} items...") {
                             files.forEach { RecycleBinManager.restore(it) }
                             // Refresh
                             if (activePane == 0) {
@@ -982,6 +1038,46 @@ fun GlaiveScreen() {
                         Toast.makeText(context, "Paths copied to clipboard", Toast.LENGTH_SHORT).show()
                         selectedPaths = emptySet()
                         showMultiSelectionMenu = false
+                    }
+                )
+            }
+
+            // -- DROP DIALOG --
+            if (showDropDialog) {
+                AlertDialog(
+                    onDismissRequest = { showDropDialog = false },
+                    containerColor = theme.colors.surface,
+                    title = { Text("Drop Action", color = theme.colors.text) },
+                    text = { Text("Choose action for dropped files:", color = theme.colors.text) },
+                    confirmButton = {
+                        Row {
+                            Button(
+                                onClick = {
+                                    isCutOperation = true // Move
+                                    handlePaste(dropActionTarget)
+                                    showDropDialog = false
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = theme.colors.accent)
+                            ) {
+                                Text("Move")
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    isCutOperation = false // Copy
+                                    handlePaste(dropActionTarget)
+                                    showDropDialog = false
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = theme.colors.accent)
+                            ) {
+                                Text("Copy")
+                            }
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showDropDialog = false }) {
+                            Text("Cancel", color = theme.colors.error)
+                        }
                     }
                 )
             }
@@ -1059,9 +1155,9 @@ fun GlaiveScreen() {
                     isTrashBin = RecycleBinManager.isTrashItem(deleteAction!!.first.firstOrNull() ?: ""),
                     onConfirm = { permanent ->
                         val (paths, pane) = deleteAction!!
-                        runBlocking(if (permanent) "Deleting forever..." else "Moving to Trash...") {
+                        performAsyncOperation(if (permanent) "Deleting forever..." else "Moving to Trash...") {
                             // Check if inside archive
-                            val firstPath = paths.firstOrNull() ?: return@runBlocking
+                            val firstPath = paths.firstOrNull() ?: return@performAsyncOperation
                             val archiveRoot = FileOperations.getArchiveRoot(firstPath)
 
                             if (archiveRoot != null) {
@@ -1250,14 +1346,28 @@ fun GlaiveHeader(
                                     }
                                 )
                                 if (isSearching) {
-                                    CircularProgressIndicator(
+                                    Row(
                                         modifier = Modifier
-                                            .size(20.dp)
                                             .align(Alignment.CenterEnd)
-                                            .zIndex(1f),
-                                        color = theme.colors.accent,
-                                        strokeWidth = 2.dp
-                                    )
+                                            .zIndex(1f)
+                                            .padding(end = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "Searching...",
+                                            style = TextStyle(
+                                                color = theme.colors.accent.copy(alpha = 0.7f),
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Medium
+                                            ),
+                                            modifier = Modifier.padding(end = 8.dp)
+                                        )
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            color = theme.colors.accent,
+                                            strokeWidth = 2.dp
+                                        )
+                                    }
                                 }
                             }
                         } else {
@@ -1399,6 +1509,7 @@ fun BreadcrumbStrip(currentPath: String, onPathJump: (String) -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PaneBrowser(
     paneIndex: Int,
@@ -1415,7 +1526,8 @@ fun PaneBrowser(
     directorySizes: Map<String, Long>,
     canMaximize: Boolean = false,
     isSearchMode: Boolean = false,
-    activePath: String = ""
+    activePath: String = "",
+    onDrop: (DragAndDropEvent) -> Unit
 ) {
     val theme = LocalGlaiveTheme.current
     var showMaximizeButton by remember { mutableStateOf(true) }
@@ -1427,29 +1539,78 @@ fun PaneBrowser(
         }
     }
 
-    Box(modifier = modifier.pointerInput(clipboardActive) {
-        awaitPointerEventScope {
-            while (true) {
-                val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
-                if (event.changes.any { it.pressed }) {
-                    showMaximizeButton = true
-                }
+    val dragTargetModifier = Modifier.dragAndDropTarget(
+        shouldStartDragAndDrop = { event ->
+            event.mimeTypes().contains(android.content.ClipDescription.MIMETYPE_TEXT_PLAIN)
+        },
+        target = object : DragAndDropTarget {
+            override fun onDrop(event: DragAndDropEvent): Boolean {
+                onDrop(event)
+                return true
             }
         }
-    }.pointerInput(clipboardActive) {
-        if (clipboardActive) {
-            detectTapGestures(
-                onTap = { onPaste() }
-            )
-        }
-    }) {
+    )
+
+    Box(modifier = modifier
+        .then(dragTargetModifier)
+        .pointerInput(clipboardActive) {
+            awaitPointerEventScope {
+                while (true) {
+                    val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                    if (event.changes.any { it.pressed }) {
+                        showMaximizeButton = true
+                    }
+                }
+            }
+        }.pointerInput(clipboardActive) {
+            if (clipboardActive) {
+                detectTapGestures(
+                    onTap = { onPaste() }
+                )
+            }
+        }) {
         // Helper to render items without duplication
         fun androidx.compose.foundation.lazy.grid.LazyGridScope.renderItems(items: List<GlaiveItem>) {
             items(items, key = { it.path }) { item ->
+                val dragModifier = Modifier.dragAndDropSource {
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = {
+                            val paths = if (selectedPaths.contains(item.path)) selectedPaths else setOf(item.path)
+                            val first = paths.first()
+                            val clipData = ClipData.newPlainText("files", first)
+                            paths.drop(1).forEach { clipData.addItem(ClipData.Item(it)) }
+
+                            startTransfer(
+                                DragAndDropTransferData(
+                                    clipData = clipData,
+                                    flags = View.DRAG_FLAG_GLOBAL
+                                )
+                            )
+                        },
+                        onDrag = { _, _ -> },
+                        onDragEnd = {},
+                        onDragCancel = {}
+                    )
+                }
+
                  if (isGridView) {
-                    FileGridItem(item = item, isSelected = selectedPaths.contains(item.path), onClick = { onItemClick(paneIndex, item) }, onLongClick = { onItemLongClick(paneIndex, item) })
+                    FileGridItem(
+                        item = item,
+                        isSelected = selectedPaths.contains(item.path),
+                        onClick = { onItemClick(paneIndex, item) },
+                        onLongClick = { onItemLongClick(paneIndex, item) },
+                        modifier = dragModifier
+                    )
                  } else {
-                    FileCard(item = item, isSelected = selectedPaths.contains(item.path), sortMode = sortMode, onClick = { onItemClick(paneIndex, item) }, onLongClick = { onItemLongClick(paneIndex, item) }, directorySize = directorySizes[item.path])
+                    FileCard(
+                        item = item,
+                        isSelected = selectedPaths.contains(item.path),
+                        sortMode = sortMode,
+                        onClick = { onItemClick(paneIndex, item) },
+                        onLongClick = { onItemLongClick(paneIndex, item) },
+                        directorySize = directorySizes[item.path],
+                        modifier = dragModifier
+                    )
                  }
             }
         }
@@ -1527,11 +1688,33 @@ fun PaneBrowser(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 items(displayedList, key = { it.path }) { item ->
+                    val dragModifier = Modifier.dragAndDropSource {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                val paths = if (selectedPaths.contains(item.path)) selectedPaths else setOf(item.path)
+                                val first = paths.first()
+                                val clipData = ClipData.newPlainText("files", first)
+                                paths.drop(1).forEach { clipData.addItem(ClipData.Item(it)) }
+
+                                startTransfer(
+                                    DragAndDropTransferData(
+                                        clipData = clipData,
+                                        flags = View.DRAG_FLAG_GLOBAL
+                                    )
+                                )
+                            },
+                            onDrag = { _, _ -> },
+                            onDragEnd = {},
+                            onDragCancel = {}
+                        )
+                    }
+
                     FileGridItem(
                         item = item,
                         isSelected = selectedPaths.contains(item.path),
                         onClick = { onItemClick(paneIndex, item) },
-                        onLongClick = { onItemLongClick(paneIndex, item) }
+                        onLongClick = { onItemLongClick(paneIndex, item) },
+                        modifier = dragModifier
                     )
                 }
             }
@@ -1542,13 +1725,35 @@ fun PaneBrowser(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 items(displayedList, key = { it.path }) { item ->
+                    val dragModifier = Modifier.dragAndDropSource {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                val paths = if (selectedPaths.contains(item.path)) selectedPaths else setOf(item.path)
+                                val first = paths.first()
+                                val clipData = ClipData.newPlainText("files", first)
+                                paths.drop(1).forEach { clipData.addItem(ClipData.Item(it)) }
+
+                                startTransfer(
+                                    DragAndDropTransferData(
+                                        clipData = clipData,
+                                        flags = View.DRAG_FLAG_GLOBAL
+                                    )
+                                )
+                            },
+                            onDrag = { _, _ -> },
+                            onDragEnd = {},
+                            onDragCancel = {}
+                        )
+                    }
+
                     FileCard(
                         item = item,
                         isSelected = selectedPaths.contains(item.path),
                         sortMode = sortMode,
                         onClick = { onItemClick(paneIndex, item) },
                         onLongClick = { onItemLongClick(paneIndex, item) },
-                        directorySize = directorySizes[item.path]
+                        directorySize = directorySizes[item.path],
+                        modifier = dragModifier
                     )
                 }
             }
@@ -1581,13 +1786,14 @@ fun FileCard(
     sortMode: SortMode,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
-    directorySize: Long?
+    directorySize: Long?,
+    modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
     val theme = LocalGlaiveTheme.current
 
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(64.dp)
             .clip(RoundedCornerShape(theme.shapes.cornerRadius))
@@ -1935,12 +2141,13 @@ fun FileGridItem(
     item: GlaiveItem,
     isSelected: Boolean,
     onClick: () -> Unit,
-    onLongClick: () -> Unit
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val theme = LocalGlaiveTheme.current
     val haptic = LocalHapticFeedback.current
     Column(
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(theme.shapes.cornerRadius))
             .background(if (isSelected) theme.colors.accent.copy(alpha = 0.15f) else theme.colors.surface)
             .border(if (isSelected) theme.shapes.borderWidth else 0.dp, if (isSelected) theme.colors.accent else Color.Transparent, RoundedCornerShape(theme.shapes.cornerRadius))

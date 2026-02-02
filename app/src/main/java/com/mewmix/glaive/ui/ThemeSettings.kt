@@ -29,7 +29,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import android.widget.Toast
+import kotlinx.coroutines.launch
 import com.mewmix.glaive.BuildConfig
+import com.mewmix.glaive.core.NativeCore
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -41,6 +44,7 @@ fun ThemeSettingsDialog(
     onReset: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var background by remember { mutableStateOf(currentTheme.colors.background) }
     var surface by remember { mutableStateOf(currentTheme.colors.surface) }
     var text by remember { mutableStateOf(currentTheme.colors.text) }
@@ -147,6 +151,36 @@ fun ThemeSettingsDialog(
                             border = androidx.compose.foundation.BorderStroke(1.dp, if (debugEnabled) currentTheme.colors.accent else Color.Gray)
                         ) {
                             Text("View Debug Logs")
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        var isBenchmarking by remember { mutableStateOf(false) }
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    isBenchmarking = true
+                                    try {
+                                        NativeCore.runBenchmark("/storage/emulated/0")
+                                        Toast.makeText(context, "Benchmark Complete. Check Logcat (GLAIVE_C)", Toast.LENGTH_LONG).show()
+                                    } catch(e: Exception) {
+                                        Toast.makeText(context, "Benchmark Failed: ${e.message}", Toast.LENGTH_LONG).show()
+                                    } finally {
+                                        isBenchmarking = false
+                                    }
+                                }
+                            },
+                            enabled = !isBenchmarking,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = currentTheme.colors.accent)
+                        ) {
+                            if (isBenchmarking) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Running...", color = Color.Black)
+                            } else {
+                                Text("Run Native Benchmark", color = Color.Black)
+                            }
                         }
                     }
                 }
