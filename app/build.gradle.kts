@@ -1,5 +1,6 @@
 import java.util.Properties
 import java.io.FileInputStream
+import org.gradle.api.GradleException
 
 plugins {
     id("com.android.application")
@@ -23,8 +24,8 @@ android {
         applicationId = "com.mewmix.glaive"
         minSdk = 28
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.0.1.2"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -80,13 +81,44 @@ android {
         create("release") {
             val keystorePropertiesFile = rootProject.file("keystore.properties")
             val keystoreProperties = Properties()
+            val isReleaseBuild = gradle.startParameter.taskNames.any {
+                it.contains("Release", ignoreCase = true)
+            }
             if (keystorePropertiesFile.exists()) {
                 keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+            } else if (isReleaseBuild) {
+                throw GradleException("Missing keystore.properties for release signing.")
             }
-            storeFile = file(keystoreProperties.getProperty("storeFile"))
-            storePassword = keystoreProperties.getProperty("storePassword")
-            keyAlias = keystoreProperties.getProperty("keyAlias")
-            keyPassword = keystoreProperties.getProperty("keyPassword")
+            val storeFilePath = keystoreProperties.getProperty("storeFile")
+            val storePasswordValue = keystoreProperties.getProperty("storePassword")
+            val keyAliasValue = keystoreProperties.getProperty("keyAlias")
+            val keyPasswordValue = keystoreProperties.getProperty("keyPassword")
+            if (isReleaseBuild) {
+                if (storeFilePath.isNullOrBlank()) {
+                    throw GradleException("Missing storeFile in keystore.properties for release signing.")
+                }
+                if (storePasswordValue.isNullOrBlank()) {
+                    throw GradleException("Missing storePassword in keystore.properties for release signing.")
+                }
+                if (keyAliasValue.isNullOrBlank()) {
+                    throw GradleException("Missing keyAlias in keystore.properties for release signing.")
+                }
+                if (keyPasswordValue.isNullOrBlank()) {
+                    throw GradleException("Missing keyPassword in keystore.properties for release signing.")
+                }
+            }
+            if (!storeFilePath.isNullOrBlank()) {
+                storeFile = file(storeFilePath)
+            }
+            if (!storePasswordValue.isNullOrBlank()) {
+                storePassword = storePasswordValue
+            }
+            if (!keyAliasValue.isNullOrBlank()) {
+                keyAlias = keyAliasValue
+            }
+            if (!keyPasswordValue.isNullOrBlank()) {
+                keyPassword = keyPasswordValue
+            }
         }
     }
 
