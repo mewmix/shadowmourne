@@ -403,6 +403,32 @@ typedef struct {
     int64_t time;
 } GlaiveEntry;
 
+typedef struct {
+    int dirfd;
+    GlaiveEntry* entries;
+    size_t start_index;
+    size_t end_index;
+} StatWorkerArgs;
+
+void* stat_worker_thread(void* arg) {
+    StatWorkerArgs* args = (StatWorkerArgs*)arg;
+    struct stat st;
+    for (size_t i = args->start_index; i < args->end_index; i++) {
+        GlaiveEntry* e = &args->entries[i];
+        if (fstatat(args->dirfd, e->name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+            e->size = st.st_size;
+            e->time = st.st_mtime;
+            if (e->type == TYPE_UNKNOWN || e->type == TYPE_FILE) {
+                 if (S_ISDIR(st.st_mode)) e->type = TYPE_DIR;
+                 else if (e->type == TYPE_UNKNOWN) e->type = fast_get_type(e->name, e->name_len);
+            }
+        } else {
+             if (e->type == TYPE_UNKNOWN) e->type = fast_get_type(e->name, e->name_len);
+        }
+    }
+    return NULL;
+}
+
 static int g_sort_mode = 0;
 static int g_sort_asc = 1;
 
@@ -464,9 +490,9 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
 
     char kbuf[4096] __attribute__((aligned(8)));
     struct linux_dirent64 *d;
-    struct stat st;
     int nread;
 
+    // PHASE 1: READ ENTRIES (SERIAL)
     while ((nread = syscall(__NR_getdents64, fd, kbuf, sizeof(kbuf))) > 0) {
         int bpos = 0;
         while (bpos < nread) {
@@ -479,27 +505,12 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
             while (d->d_name[name_len] && name_len < 255) name_len++;
 
             unsigned char type = TYPE_UNKNOWN;
-            int64_t size = 0;
-            int64_t time = 0;
-
             if (d->d_type == DT_DIR) type = TYPE_DIR;
             else if (d->d_type == DT_REG) type = fast_get_type(d->d_name, name_len);
-            else {
-                 if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-                    if (S_ISDIR(st.st_mode)) type = TYPE_DIR;
-                    else type = fast_get_type(d->d_name, name_len);
-                 } else type = TYPE_FILE;
-            }
-            if (type == TYPE_UNKNOWN) type = fast_get_type(d->d_name, name_len);
-            if (type == TYPE_UNKNOWN) type = TYPE_FILE;
 
-            if (filterMask != 0 && type != TYPE_DIR) {
+            // Filter early if type is known
+            if (filterMask != 0 && type != TYPE_UNKNOWN && type != TYPE_DIR) {
                 if (!((1 << type) & filterMask)) continue;
-            }
-
-            if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-                size = st.st_size;
-                time = st.st_mtime;
             }
 
             if (count >= max_entries) {
@@ -512,13 +523,44 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
             entries[count].name = strdup(d->d_name);
             entries[count].name_len = name_len;
             entries[count].type = type;
-            entries[count].size = size;
-            entries[count].time = time;
+            entries[count].size = 0;
+            entries[count].time = 0;
             count++;
+        }
+    }
+
+    // PHASE 2: STAT (PARALLEL)
+    if (count > 0) {
+        #define NUM_STAT_THREADS 4
+        if (count < 100) {
+             StatWorkerArgs args = { .dirfd = fd, .entries = entries, .start_index = 0, .end_index = count };
+             stat_worker_thread(&args);
+        } else {
+            pthread_t threads[NUM_STAT_THREADS];
+            int created[NUM_STAT_THREADS];
+            StatWorkerArgs args[NUM_STAT_THREADS];
+            size_t chunk = count / NUM_STAT_THREADS;
+
+            for (int i = 0; i < NUM_STAT_THREADS; i++) {
+                args[i].dirfd = fd;
+                args[i].entries = entries;
+                args[i].start_index = i * chunk;
+                args[i].end_index = (i == NUM_STAT_THREADS - 1) ? count : (i + 1) * chunk;
+                if (pthread_create(&threads[i], NULL, stat_worker_thread, &args[i]) == 0) {
+                    created[i] = 1;
+                } else {
+                    created[i] = 0;
+                    stat_worker_thread(&args[i]);
+                }
+            }
+            for (int i = 0; i < NUM_STAT_THREADS; i++) {
+                if (created[i]) pthread_join(threads[i], NULL);
+            }
         }
     }
     close(fd);
 
+    // PHASE 3: SORT & OUTPUT (SERIAL)
     g_sort_mode = sortMode;
     g_sort_asc = asc;
     qsort(entries, count, sizeof(GlaiveEntry), compare_entries);
@@ -526,7 +568,15 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
     unsigned char *head = buffer;
     unsigned char *end = buffer + capacity;
     
-    for (size_t i = 0; i < count; i++) {
+    size_t i = 0;
+    for (; i < count; i++) {
+        if (filterMask != 0 && entries[i].type != TYPE_DIR) {
+             if (!((1 << entries[i].type) & filterMask)) {
+                 free(entries[i].name);
+                 continue;
+             }
+        }
+
         if (head + 2 + entries[i].name_len + 16 > end) break;
         *head++ = entries[i].type;
         *head++ = (unsigned char)entries[i].name_len;
@@ -536,6 +586,10 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
         head += sizeof(int64_t);
         memcpy(head, &entries[i].time, sizeof(int64_t));
         head += sizeof(int64_t);
+        free(entries[i].name);
+    }
+    // Clean up remaining entries if buffer was full
+    for (; i < count; i++) {
         free(entries[i].name);
     }
     free(entries);
