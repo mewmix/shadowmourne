@@ -20,6 +20,11 @@
 #define LOG_TAG "GLAIVE_C"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+// Feature flags (default off) for experimental paths
+#ifndef GLAIVE_EXPERIMENTAL_FASTSORT
+#define GLAIVE_EXPERIMENTAL_FASTSORT 0
+#endif
+
 // Kernel struct for getdents64
 struct linux_dirent64 {
     unsigned long long d_ino;
@@ -43,6 +48,7 @@ typedef enum {
 // GLOBALS & SYNC
 // ==========================================
 static volatile atomic_int g_cancel_search = 0;
+static volatile atomic_long g_stat_calls = 0;
 
 JNIEXPORT void JNICALL
 Java_com_mewmix_glaive_core_NativeCore_nativeCancelSearch(JNIEnv *env, jobject clazz) {
@@ -254,6 +260,63 @@ static inline unsigned char fold_ci(unsigned char c) {
     return c;
 }
 
+#if defined(__aarch64__) && GLAIVE_EXPERIMENTAL_FASTSORT
+// NEON ASCII tolower for 16-byte vector
+static inline uint8x16_t v_tolower_ascii(uint8x16_t v) {
+    const uint8x16_t diff = vdupq_n_u8(0x20);
+    const uint8x16_t minA = vdupq_n_u8('A');
+    const uint8x16_t maxZ = vdupq_n_u8('Z');
+    uint8x16_t geA = vcgeq_u8(v, minA);
+    uint8x16_t leZ = vcleq_u8(v, maxZ);
+    uint8x16_t mask = vandq_u8(geA, leZ);
+    return vorrq_u8(v, vandq_u8(mask, diff));
+}
+
+// Fast case-insensitive ASCII compare. Falls back to scalar at first stop.
+static int fast_strcasecmp_neon(const char* s1, const char* s2) {
+    const uint8_t* p1 = (const uint8_t*)s1;
+    const uint8_t* p2 = (const uint8_t*)s2;
+    const uint8x16_t vzero = vdupq_n_u8(0);
+
+    size_t i = 0;
+    for (;;) {
+        uint8x16_t a = vld1q_u8(p1 + i);
+        uint8x16_t b = vld1q_u8(p2 + i);
+        uint8x16_t a0 = vceqq_u8(a, vzero);
+        uint8x16_t b0 = vceqq_u8(b, vzero);
+        uint8x16_t al = v_tolower_ascii(a);
+        uint8x16_t bl = v_tolower_ascii(b);
+        uint8x16_t neq = vmvnq_u8(vceqq_u8(al, bl));
+        uint8x16_t stop = vorrq_u8(neq, vorrq_u8(a0, b0));
+        // horizontal OR reduction
+        uint64x2_t red = vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(stop)));
+        if (vgetq_lane_u64(red, 0) | vgetq_lane_u64(red, 1)) break;
+        i += 16;
+    }
+
+    // Scalar tail for correctness
+    const unsigned char* x = (const unsigned char*)(p1 + i);
+    const unsigned char* y = (const unsigned char*)(p2 + i);
+    int d;
+    do {
+        unsigned char c1 = *x++;
+        unsigned char c2 = *y++;
+        if (c1 >= 'A' && c1 <= 'Z') c1 = (unsigned char)(c1 + 32);
+        if (c2 >= 'A' && c2 <= 'Z') c2 = (unsigned char)(c2 + 32);
+        d = (int)c1 - (int)c2;
+    } while (d == 0 && x[-1] != 0 && y[-1] != 0);
+    return d;
+}
+#endif
+
+static inline int strcasecmp_fast(const char* a, const char* b) {
+#if defined(__aarch64__) && GLAIVE_EXPERIMENTAL_FASTSORT
+    return fast_strcasecmp_neon(a, b);
+#else
+    return strcasecmp(a, b);
+#endif
+}
+
 static int optimized_neon_contains(const char *haystack, int h_len, const SearchContext* ctx) {
     if (h_len < ctx->qlen) return 0;
     size_t n_len = ctx->qlen;
@@ -403,6 +466,33 @@ typedef struct {
     int64_t time;
 } GlaiveEntry;
 
+typedef struct {
+    int dirfd;
+    GlaiveEntry* entries;
+    size_t start_index;
+    size_t end_index;
+} StatWorkerArgs;
+
+void* stat_worker_thread(void* arg) {
+    StatWorkerArgs* args = (StatWorkerArgs*)arg;
+    struct stat st;
+    for (size_t i = args->start_index; i < args->end_index; i++) {
+        GlaiveEntry* e = &args->entries[i];
+        if (fstatat(args->dirfd, e->name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+            e->size = st.st_size;
+            e->time = st.st_mtime;
+            if (e->type == TYPE_UNKNOWN || e->type == TYPE_FILE) {
+                 if (S_ISDIR(st.st_mode)) e->type = TYPE_DIR;
+                 else if (e->type == TYPE_UNKNOWN) e->type = fast_get_type(e->name, e->name_len);
+            }
+            atomic_fetch_add(&g_stat_calls, 1);
+        } else {
+             if (e->type == TYPE_UNKNOWN) e->type = fast_get_type(e->name, e->name_len);
+        }
+    }
+    return NULL;
+}
+
 static int g_sort_mode = 0;
 static int g_sort_asc = 1;
 
@@ -415,23 +505,23 @@ int compare_entries(const void* a, const void* b) {
 
     int result = 0;
     switch (g_sort_mode) {
-        case 0: result = strcasecmp(ea->name, eb->name); break;
+        case 0: result = strcasecmp_fast(ea->name, eb->name); break;
         case 2:
             if (ea->size < eb->size) result = -1;
             else if (ea->size > eb->size) result = 1;
-            else result = strcasecmp(ea->name, eb->name);
+            else result = strcasecmp_fast(ea->name, eb->name);
             break;
         case 1:
             if (ea->time < eb->time) result = -1;
             else if (ea->time > eb->time) result = 1;
-            else result = strcasecmp(ea->name, eb->name);
+            else result = strcasecmp_fast(ea->name, eb->name);
             break;
         case 3:
             if (ea->type < eb->type) result = -1;
             else if (ea->type > eb->type) result = 1;
-            else result = strcasecmp(ea->name, eb->name);
+            else result = strcasecmp_fast(ea->name, eb->name);
             break;
-        default: result = strcasecmp(ea->name, eb->name);
+        default: result = strcasecmp_fast(ea->name, eb->name);
     }
     return g_sort_asc ? result : -result;
 }
@@ -462,12 +552,24 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
         return -3;
     }
 
-    char kbuf[4096] __attribute__((aligned(8)));
+    // Use a larger getdents64 buffer to reduce syscalls on large directories
+    size_t kbuf_size = 65536; // 64KB
+    char* kbuf = (char*)malloc(kbuf_size);
+    if (!kbuf) {
+        free(entries);
+        close(fd);
+        (*env)->ReleaseStringUTFChars(env, jPath, path);
+        return -3;
+    }
     struct linux_dirent64 *d;
-    struct stat st;
     int nread;
 
-    while ((nread = syscall(__NR_getdents64, fd, kbuf, sizeof(kbuf))) > 0) {
+    // Timing helpers
+    struct timespec t0, t1, t2, t3, t4;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    // PHASE 1: READ ENTRIES (SERIAL)
+    while ((nread = syscall(__NR_getdents64, fd, kbuf, kbuf_size)) > 0) {
         int bpos = 0;
         while (bpos < nread) {
             d = (struct linux_dirent64 *)(kbuf + bpos);
@@ -479,27 +581,12 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
             while (d->d_name[name_len] && name_len < 255) name_len++;
 
             unsigned char type = TYPE_UNKNOWN;
-            int64_t size = 0;
-            int64_t time = 0;
-
             if (d->d_type == DT_DIR) type = TYPE_DIR;
             else if (d->d_type == DT_REG) type = fast_get_type(d->d_name, name_len);
-            else {
-                 if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-                    if (S_ISDIR(st.st_mode)) type = TYPE_DIR;
-                    else type = fast_get_type(d->d_name, name_len);
-                 } else type = TYPE_FILE;
-            }
-            if (type == TYPE_UNKNOWN) type = fast_get_type(d->d_name, name_len);
-            if (type == TYPE_UNKNOWN) type = TYPE_FILE;
 
-            if (filterMask != 0 && type != TYPE_DIR) {
+            // Filter early if type is known
+            if (filterMask != 0 && type != TYPE_UNKNOWN && type != TYPE_DIR) {
                 if (!((1 << type) & filterMask)) continue;
-            }
-
-            if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-                size = st.st_size;
-                time = st.st_mtime;
             }
 
             if (count >= max_entries) {
@@ -512,21 +599,82 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
             entries[count].name = strdup(d->d_name);
             entries[count].name_len = name_len;
             entries[count].type = type;
-            entries[count].size = size;
-            entries[count].time = time;
+            entries[count].size = 0;
+            entries[count].time = 0;
             count++;
         }
     }
-    close(fd);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
 
+    // PHASE 2: STAT (PARALLEL or LAZY)
+    int need_full_stat = (sortMode == 1 || sortMode == 2); // time or size sort
+    atomic_store(&g_stat_calls, 0);
+    if (count > 0 && need_full_stat) {
+        long cores = sysconf(_SC_NPROCESSORS_ONLN);
+        if (cores < 1) cores = 4;
+        int num_threads = (int)cores;
+        if (num_threads > 6) num_threads = 6; // clamp for stat
+        if (num_threads < 2) num_threads = 2;
+
+        if (count < 100 || num_threads == 1) {
+            StatWorkerArgs args = { .dirfd = fd, .entries = entries, .start_index = 0, .end_index = count };
+            stat_worker_thread(&args);
+        } else {
+            pthread_t* threads = (pthread_t*)malloc(sizeof(pthread_t) * num_threads);
+            int* created = (int*)malloc(sizeof(int) * num_threads);
+            StatWorkerArgs* args = (StatWorkerArgs*)malloc(sizeof(StatWorkerArgs) * num_threads);
+            size_t chunk = count / num_threads;
+
+            for (int i = 0; i < num_threads; i++) {
+                args[i].dirfd = fd;
+                args[i].entries = entries;
+                args[i].start_index = i * chunk;
+                args[i].end_index = (i == num_threads - 1) ? count : (i + 1) * chunk;
+                if (pthread_create(&threads[i], NULL, stat_worker_thread, &args[i]) == 0) {
+                    created[i] = 1;
+                } else {
+                    created[i] = 0;
+                    stat_worker_thread(&args[i]);
+                }
+            }
+            for (int i = 0; i < num_threads; i++) {
+                if (created[i]) pthread_join(threads[i], NULL);
+            }
+            free(threads);
+            free(created);
+            free(args);
+        }
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &t2);
+
+    // PHASE 3: SORT & OUTPUT (SERIAL)
     g_sort_mode = sortMode;
     g_sort_asc = asc;
     qsort(entries, count, sizeof(GlaiveEntry), compare_entries);
+    clock_gettime(CLOCK_MONOTONIC, &t3);
+
+    // If we skipped full stat (name/type sort), populate metadata for the visible window
+    if (count > 0 && !need_full_stat) {
+        size_t window = count < 200 ? count : 200;
+        if (window > 0) {
+            StatWorkerArgs argsw = { .dirfd = fd, .entries = entries, .start_index = 0, .end_index = window };
+            stat_worker_thread(&argsw);
+        }
+    }
 
     unsigned char *head = buffer;
     unsigned char *end = buffer + capacity;
     
-    for (size_t i = 0; i < count; i++) {
+    size_t i = 0;
+    for (; i < count; i++) {
+        if (filterMask != 0 && entries[i].type != TYPE_DIR) {
+             if (!((1 << entries[i].type) & filterMask)) {
+                 free(entries[i].name);
+                 continue;
+             }
+        }
+
         if (head + 2 + entries[i].name_len + 16 > end) break;
         *head++ = entries[i].type;
         *head++ = (unsigned char)entries[i].name_len;
@@ -538,10 +686,24 @@ Java_com_mewmix_glaive_core_NativeCore_nativeFillBuffer(JNIEnv *env, jobject cla
         head += sizeof(int64_t);
         free(entries[i].name);
     }
+    // Clean up remaining entries if buffer was full
+    for (; i < count; i++) {
+        free(entries[i].name);
+    }
     free(entries);
+    free(kbuf);
+    close(fd);
 
     (*env)->ReleaseStringUTFChars(env, jPath, path);
-    return (jint)(head - buffer);
+    clock_gettime(CLOCK_MONOTONIC, &t4);
+    long read_ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+    long stat_ms = (t2.tv_sec - t1.tv_sec) * 1000 + (t2.tv_nsec - t1.tv_nsec) / 1000000;
+    long sort_ms = (t3.tv_sec - t2.tv_sec) * 1000 + (t3.tv_nsec - t2.tv_nsec) / 1000000;
+    long out_ms  = (t4.tv_sec - t3.tv_sec) * 1000 + (t4.tv_nsec - t3.tv_nsec) / 1000000;
+    int bytes = (int)(head - buffer);
+    long stats = atomic_load(&g_stat_calls);
+    LOGE("LIST timings: read=%ldms stat=%ldms sort=%ldms out=%ldms entries=%zu stat_calls=%ld bytes=%d", read_ms, stat_ms, sort_ms, out_ms, count, stats, bytes);
+    return bytes;
 }
 
 // ==========================================
@@ -553,7 +715,7 @@ typedef struct {
     const SearchContext* ctx;
 } WorkerArgs;
 
-#define LOCAL_BUF_SIZE 16384
+#define LOCAL_BUF_SIZE 65536
 
 void* worker_thread(void* arg) {
     WorkerArgs* args = (WorkerArgs*)arg;
@@ -564,6 +726,14 @@ void* worker_thread(void* arg) {
     unsigned char local_buf[LOCAL_BUF_SIZE];
     unsigned char* head = local_buf;
     unsigned char* end = local_buf + LOCAL_BUF_SIZE;
+
+    // Reuse a single getdents buffer per worker to avoid per-directory malloc/free
+    size_t kbuf_size2 = 65536; // 64KB
+    char* kbuf2 = (char*)malloc(kbuf_size2);
+    if (!kbuf2) {
+        // Fallback to a smaller stack buffer path by exiting quickly
+        return NULL;
+    }
 
     while (1) {
         if (atomic_load(&g_cancel_search)) {
@@ -579,16 +749,15 @@ void* worker_thread(void* arg) {
 
         int fd = open(item->path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         if (fd != -1) {
-            char kbuf[4096] __attribute__((aligned(8)));
             struct linux_dirent64 *d;
             int nread;
 
-            while ((nread = syscall(__NR_getdents64, fd, kbuf, sizeof(kbuf))) > 0) {
+            while ((nread = syscall(__NR_getdents64, fd, kbuf2, kbuf_size2)) > 0) {
                 if (atomic_load(&g_cancel_search)) break;
 
                 int bpos = 0;
                 while (bpos < nread) {
-                    d = (struct linux_dirent64 *)(kbuf + bpos);
+                    d = (struct linux_dirent64 *)(kbuf2 + bpos);
                     bpos += d->d_reclen;
                     if (d->d_name[0] == '.') continue;
 
@@ -620,7 +789,8 @@ void* worker_thread(void* arg) {
                             }
 
                             size_t full_len = item->len + 1 + name_len;
-                            size_t rel_len = full_len - (gbuf->base_len + 1);
+                            size_t base_index = (gbuf->base_len + 1 <= item->len) ? (gbuf->base_len + 1) : item->len;
+                            size_t rel_len = full_len - base_index;
 
                             if (head + 18 + rel_len > end) {
                                 gbuf_write(gbuf, local_buf, head - local_buf);
@@ -632,8 +802,8 @@ void* worker_thread(void* arg) {
                                 *head++ = g_type;
                                 *head++ = (unsigned char)proto_len;
 
-                                char* base_ptr = item->path + gbuf->base_len + 1;
-                                size_t prefix_len = item->len - (gbuf->base_len + 1);
+                                char* base_ptr = item->path + base_index;
+                                size_t prefix_len = (item->len > base_index) ? (item->len - base_index) : 0;
                                 if (prefix_len > 0) {
                                     size_t copy_len = (prefix_len > proto_len) ? proto_len : prefix_len;
                                     memcpy(head, base_ptr, copy_len);
@@ -665,6 +835,7 @@ void* worker_thread(void* arg) {
     if (head > local_buf) {
         gbuf_write(gbuf, local_buf, head - local_buf);
     }
+    free(kbuf2);
     return NULL;
 }
 
@@ -705,8 +876,12 @@ Java_com_mewmix_glaive_core_NativeCore_nativeSearch(JNIEnv *env, jobject clazz, 
     root_dup[base_len] = 0;
     queue_push(&q, root_dup, base_len);
 
-    #define NUM_THREADS 4
-    pthread_t threads[NUM_THREADS];
+    long cores = sysconf(_SC_NPROCESSORS_ONLN);
+    if (cores < 1) cores = 4;
+    int NUM_THREADS = (int)cores;
+    if (NUM_THREADS < 2) NUM_THREADS = 2;
+    if (NUM_THREADS > 8) NUM_THREADS = 8;
+    pthread_t* threads = (pthread_t*)malloc(sizeof(pthread_t) * NUM_THREADS);
     WorkerArgs args = { .queue = &q, .gbuf = &gbuf, .ctx = &ctx };
 
     for (int i = 0; i < NUM_THREADS; i++) {
@@ -715,6 +890,7 @@ Java_com_mewmix_glaive_core_NativeCore_nativeSearch(JNIEnv *env, jobject clazz, 
     for (int i = 0; i < NUM_THREADS; i++) {
         pthread_join(threads[i], NULL);
     }
+    free(threads);
 
     queue_destroy(&q);
     int result_len = (int)(gbuf.current - gbuf.start);
