@@ -7,8 +7,9 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 
-    <permission android:name="com.mewmix.glaive.permission.ACCESS_TOOLS"
-        android:protectionLevel="signature" />
+    <permission
+        android:name="com.mewmix.glaive.permission.ACCESS_TOOLS"
+        android:protectionLevel="normal" />
 
     <application
         android:requestLegacyExternalStorage="true"

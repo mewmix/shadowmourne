@@ -2,9 +2,11 @@ package com.mewmix.glaive.bridge
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import com.mewmix.glaive.core.NativeCore
@@ -16,6 +18,7 @@ import org.json.JSONObject
 import java.io.File
 
 class BridgeActivity : ComponentActivity() {
+    private class StoragePermissionRequiredException(message: String) : SecurityException(message)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,6 +43,11 @@ class BridgeActivity : ComponentActivity() {
                 val result = executeTool(toolName, params)
                 withContext(Dispatchers.Main) {
                     finishWithResult(result = result)
+                }
+            } catch (e: StoragePermissionRequiredException) {
+                withContext(Dispatchers.Main) {
+                    requestAllFilesAccess()
+                    finishWithResult(error = e.message ?: "All files access is required")
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
@@ -158,11 +166,29 @@ class BridgeActivity : ComponentActivity() {
 
         if (isSharedStorage && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
-                throw SecurityException(
+                throw StoragePermissionRequiredException(
                     "Permission Denial: Glaive needs 'All files access' to $purpose at $path. " +
                         "Open Glaive and grant it in Settings > Apps > Glaive > All files access."
                 )
             }
+        }
+    }
+
+    private fun requestAllFilesAccess() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        try {
+            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                addCategory(Intent.CATEGORY_DEFAULT)
+                data = Uri.parse("package:$packageName")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (_: Exception) {
+            startActivity(
+                Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            )
         }
     }
 
